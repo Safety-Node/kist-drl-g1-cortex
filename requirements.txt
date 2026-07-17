@@ -1,0 +1,19 @@
+# Non-ROS Python dependencies for the cortex cognitive plane.
+# ROS deps (rclpy, std_msgs, ...) come from the Humble apt install, not here.
+# Pin exact versions once the STT/TTS/LLM stack is chosen.
+#
+# TODO(REQ-XX): lock versions after the STT/TTS/LLM providers are decided.
+
+# --- STT (streaming + VAD) ---
+# faster-whisper            # local streaming STT candidate
+# webrtcvad                 # voice-activity detection / endpointing
+
+# --- TTS (streaming + barge-in) ---
+# (provider TBD)
+
+# --- LLM / planning (slow path only) ---
+# openai                    # or the chosen LLM client
+
+json5                       # scenario files (config/scenarios/*.json5)
+numpy
+pyyaml

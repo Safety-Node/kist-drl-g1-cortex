@@ -1,0 +1,159 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    name: build (${{ matrix.ros_distro }})
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        ros_distro: [humble]   # Pinned to the NX onboard distro; rclpy ABI follows system Python.
+
+    container:
+      image: ros:${{ matrix.ros_distro }}-ros-base
+
+    # Container runs as root; pin ccache dir explicitly so the cache action and
+    # the compiler agree on the path (no ~ expansion surprises).
+    env:
+      CCACHE_DIR: /root/.ccache
+      CCACHE_COMPRESS: "1"
+      CCACHE_MAXSIZE: "500M"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Only submodule is g1_onboard_msgs (public, HTTPS) — safe to recurse.
+          submodules: recursive
+
+      # ----------------------------------------------------------------
+      # Caches -- typical wall-clock impact on a hit:
+      #   apt cache       ~60s saved (skip re-downloading .deb files)
+      #   ccache          ~30-60s saved (cortex_msgs + g1_onboard_msgs C++ codegen)
+      #   colcon cache    ~30-90s saved (unchanged packages skip build)
+      # ----------------------------------------------------------------
+      - name: Cache apt archives
+        uses: actions/cache@v4
+        with:
+          path: /var/cache/apt/archives
+          key: apt-${{ matrix.ros_distro }}-${{ hashFiles('.github/workflows/ci.yml') }}
+          restore-keys: |
+            apt-${{ matrix.ros_distro }}-
+
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: /root/.ccache
+          # SHA in the key forces a write each commit; restore-keys lets any
+          # earlier ccache from this distro seed the next build.
+          key: ccache-${{ matrix.ros_distro }}-${{ github.sha }}
+          restore-keys: |
+            ccache-${{ matrix.ros_distro }}-
+
+      - name: Cache colcon build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            build
+            install
+            log
+          # Hash anything that affects build outputs. Scenarios are installed as
+          # package data, so *.json5 counts too.
+          key: colcon-${{ matrix.ros_distro }}-${{ hashFiles('src/**/package.xml', 'src/**/CMakeLists.txt', 'src/**/*.py', 'src/**/*.msg', 'src/**/*.yaml', 'src/**/*.json5') }}
+          restore-keys: |
+            colcon-${{ matrix.ros_distro }}-
+
+      - name: Install build tooling
+        shell: bash
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            ccache \
+            python3-colcon-common-extensions \
+            python3-rosdep \
+            python3-pip \
+            python3-pytest \
+            python3-pytest-cov
+          rosdep init || true
+          rosdep update
+
+      - name: Install Python deps
+        shell: bash
+        # Non-ROS deps (json5 for the scenario loader, ...). rosdep does not
+        # cover these; the nodes import them at runtime/test time.
+        run: pip3 install -r requirements.txt
+
+      - name: rosdep install
+        shell: bash
+        run: |
+          source /opt/ros/${{ matrix.ros_distro }}/setup.bash
+          rosdep install --from-paths src --ignore-src -r -y || true
+
+      - name: colcon build
+        shell: bash
+        env:
+          # Route C/C++ through ccache wrappers (matters for the ament_cmake
+          # interface packages: cortex_msgs, g1_onboard_msgs).
+          CC: /usr/lib/ccache/gcc
+          CXX: /usr/lib/ccache/g++
+        run: |
+          source /opt/ros/${{ matrix.ros_distro }}/setup.bash
+          colcon build --symlink-install --cmake-args -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          ccache --show-stats || true
+
+      - name: Interface sanity
+        shell: bash
+        # Fail if the build "succeeded" but produced no usable typesupport —
+        # catches a malformed .msg or a broken CMakeLists/package.xml.
+        run: |
+          source /opt/ros/${{ matrix.ros_distro }}/setup.bash
+          source install/setup.bash
+          ros2 interface list | grep cortex_msgs
+          ros2 interface list | grep g1_onboard_msgs
+
+      - name: Scenario sanity
+        shell: bash
+        # Scenarios are data, not code: a malformed .json5 or a hook label with
+        # no connector only shows up at runtime. Parse them in CI instead.
+        run: |
+          source /opt/ros/${{ matrix.ros_distro }}/setup.bash
+          source install/setup.bash
+          python3 - <<'EOF'
+          import glob, sys
+          import json5
+          LABELS = {'speak', 'navigation', 'vla'}   # keep in sync with orchestrator connectors
+          bad = False
+          paths = sorted(glob.glob('src/cortex_reasoning/config/scenarios/*.json5'))
+          if not paths:
+              sys.exit('no scenarios found')
+          for p in paths:
+              d = json5.load(open(p, encoding='utf-8'))
+              for key in ('name', 'triggers', 'sub_tasks'):
+                  if key not in d:
+                      print(f'{p}: missing {key!r}'); bad = True
+              for st in d.get('sub_tasks', []):
+                  if 'name' not in st:
+                      print(f'{p}: sub_task missing name'); bad = True
+                  for hook in ('on_create', 'on_start', 'on_success'):
+                      for step in st.get(hook, []):
+                          for label in step:
+                              if label not in LABELS:
+                                  print(f'{p}: {st.get("name")}.{hook} unknown label {label!r}')
+                                  bad = True
+              print(f'{p}: OK ({len(d.get("sub_tasks", []))} sub-tasks)')
+          sys.exit(1 if bad else 0)
+          EOF
+
+      - name: colcon test
+        shell: bash
+        run: |
+          source /opt/ros/${{ matrix.ros_distro }}/setup.bash
+          source install/setup.bash
+          colcon test --return-code-on-test-failure || true
+          colcon test-result --verbose

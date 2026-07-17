@@ -1,0 +1,73 @@
+# PR meta gate -- enforces branch naming + PR title format.
+#
+# Pairs with the repo's "Squash and merge only" setting: the PR title becomes
+# the squash commit message on main, so enforcing it here gives us a clean
+# history without dictating individual local commit messages.
+#
+# Required status checks (in branch protection):
+#   - branch-name
+#   - pr-title
+name: PR meta
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+jobs:
+  branch-name:
+    name: branch-name
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check pattern
+        env:
+          BRANCH: ${{ github.head_ref }}
+        run: |
+          if [[ ! "$BRANCH" =~ ^(TASK-[0-9]+|chore/.+)$ ]]; then
+            echo "::error::Branch name '$BRANCH' must match TASK-{number} (Notion-linked work) or chore/{description} (non-task housekeeping)"
+            echo ""
+            echo "Examples that pass:"
+            echo "  TASK-42"
+            echo "  TASK-7"
+            echo "  chore/fix-typo-in-readme"
+            echo "  chore/bump-cyclonedds-dep"
+            echo ""
+            echo "Examples that fail:"
+            echo "  TASK-42-add-vlm-critic  (suffix not allowed)"
+            echo "  feature/vlm             (wrong prefix)"
+            echo "  TASK-Add-VLM            (no number)"
+            echo "  task-42                 (lowercase 'task')"
+            exit 1
+          fi
+          echo "Branch name OK: $BRANCH"
+
+  pr-title:
+    name: pr-title
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check pattern
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          # Format: [TASK-{number}] <type>(<scope>)?: <lowercase subject>
+          # Type set follows Conventional Commits.
+          # Regex held in a variable so backslash-escaped literals survive bash parsing.
+          re='^(\[TASK-[0-9]+\]|\[chore\]) (feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([a-z0-9_-]+\))?!?: [a-z].+$'
+          if [[ ! "$TITLE" =~ $re ]]; then
+            echo "::error::PR title '$TITLE' must match: ([TASK-{number}] | [chore]) <type>(<scope>)?: <lowercase subject>"
+            echo ""
+            echo "Examples that pass:"
+            echo "  [TASK-42] feat(reasoning): add vlm success criterion"
+            echo "  [TASK-7] fix(speech): drop stale barge-in flag"
+            echo "  [TASK-99] chore(ci): tighten branch regex"
+            echo "  [chore] docs(readme): fix typo in install section"
+            echo "  [chore] chore(deps): bump json5 dep"
+            echo ""
+            echo "Examples that fail:"
+            echo "  feat(reasoning): add vlm criterion    (missing [TASK-{n}] prefix)"
+            echo "  TASK-42 feat(reasoning): add ...      (missing brackets)"
+            echo "  [TASK-42] Feat(reasoning): add ...    (type must be one of: feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)"
+            echo "  [TASK-42] feat(Reasoning): add ...    (scope must be lowercase)"
+            echo "  [TASK-42] feat(reasoning): Add ...    (subject first char must be lowercase -- mid-subject acronyms like VLM are OK)"
+            exit 1
+          fi
+          echo "PR title OK: $TITLE"
