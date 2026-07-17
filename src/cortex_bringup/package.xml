@@ -10,8 +10,9 @@
   <maintainer email="park50260@gmail.com">박성용</maintainer>
   <license>Apache-2.0</license>
 
-  <exec_depend>cortex_speech</exec_depend>
-  <exec_depend>cortex_reasoning</exec_depend>
+  <exec_depend>cortex_perception</exec_depend>
+  <exec_depend>cortex_cognition</exec_depend>
+  <exec_depend>cortex_action</exec_depend>
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
 

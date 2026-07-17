@@ -4,20 +4,39 @@
 
 stt_node:
   ros__parameters:
-    audio_topic: /bridge/sensors/audio/pcm
+    # /bridge/* names follow the ICD; kist-ext-sensor-io owns the publisher.
+    # If that repo lands on different names, change them here — not in code.
+    audio_topic: /bridge/sensors/audio_pcm
+    speaker_state_topic: /bridge/sensors/speaker_state
+    estop_topic: /bridge/safety/estop
     transcript_topic: /cortex/stt/transcript
-    sample_rate: 16000
-    vad_silence_ms: 500
+    backend: google_cloud        # google_cloud | dummy (dummy needs no credentials)
+    language_code: ko-KR
+    sample_rate_hz: 16000        # AudioPCM locked format
+    interim_results: false       # false = publish only is_final transcripts
+    highpass_hz: 120.0           # removes low-freq vibration / DC
+    lowpass_hz: 5500.0           # preserves Korean fricatives (ㅅ/ㅎ/ㅊ)
+    input_gain_db: 0.0           # amplifying in a noisy room backfires
+    echo_cancel_tail_ms: 200     # mute this long after SpeakerState.playing clears
+    echo_cancel_lead_ms: 0       # pre-mute; needs a tts->stt onset signal, so off
 
 tts_node:
   ros__parameters:
     say_topic: /cortex/tts/say
     barge_in_topic: /cortex/tts/stop
-    speaker_topic: /bridge/actuators/speaker/pcm
+    audio_out_topic: /bridge/cmd/audio_out
+    estop_topic: /bridge/safety/estop
+    backend: naver_clova
+    language_code: ko-KR
+    sample_rate_hz: 16000        # wire format (PC resamples — REQ-29)
+    clova_sample_rate_hz: 24000  # Clova native request rate
+    voice: nara
+    speed: 0                     # Clova [-5, +5]
+    request_timeout_s: 5.0       # on timeout: log + drop, no retry
 
 orchestrator_node:
   ros__parameters:
-    # scenario_dir: default = installed share/cortex_reasoning/scenarios.
+    # scenario_dir: default = installed share/cortex_cognition/scenarios.
     # Override to point at a source dir during development.
     transcript_topic: /cortex/stt/transcript
     status_topic: /cortex/task_status

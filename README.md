@@ -18,13 +18,25 @@ DDS graph shared with the NX instead of a hand-rolled relay.
 
 ## Packages
 
-| # | Package | Build | Notes |
+Packages follow the embodied-AI layering — **인지(perception) → 상위 추론(cognition)
+→ 제어(action)** — not the sensor modality. That is why STT and TTS live apart:
+STT turns sound into symbols (perception), TTS is the robot acting (action).
+
+| # | Package | Layer | Notes |
 |---|---|---|---|
-| 1 | `g1_onboard_msgs` | ament_cmake | Shared interfaces submodule (SSOT) — **do not fork** |
-| 2 | `cortex_msgs` | ament_cmake | Cortex-internal: `Subtask` / `TaskStatus` / `Verdict`. `CommandStatus` is a prototype destined for SSOT (see `docs/proposals/`) |
-| 3 | `cortex_speech` | ament_python | `stt_node` (VAD → transcript), `tts_node` (text → speaker, barge-in) |
-| 4 | `cortex_reasoning` | ament_python | `orchestrator_node` (JSON5 scenarios, hook lifecycle, preemption), `vlm_node` (scene critic) |
-| 5 | `cortex_bringup` | ament_python | Top-level launch + params |
+| 1 | `g1_onboard_msgs` | — | Shared interfaces submodule (SSOT) — **do not fork** |
+| 2 | `cortex_msgs` | — | Cortex-internal: `Subtask` / `TaskStatus` / `Verdict`. `CommandStatus` is a prototype destined for SSOT (see `docs/proposals/`) |
+| 3 | `cortex_perception` | **인지** | `stt_node` (speech-band filter → Google STT → transcript, echo-cancelled), `vlm_node` (scene + `success_check` → `Verdict`) |
+| 4 | `cortex_cognition` | **상위 추론** | `orchestrator_node` (JSON5 scenarios, hook lifecycle, preemption, connectors) |
+| 5 | `cortex_action` | **제어** | `tts_node` (CLOVA Voice → 16 kHz `AudioPCM`, cancelable) |
+| 6 | `cortex_bringup` | — | Top-level launch + params |
+
+Named `cortex_cognition`, not `_reasoning`: the VLA and Gearsonic policies run
+inference too — this is the *deliberative* layer, not every inference in the stack.
+
+The other actions (navigation, VLA, Gearsonic) are real-time control that runs next
+to the hardware, so they are **not** packages here — cortex only dispatches to them
+through the cognition layer's connectors. See *Blocked on external specs*.
 
 ---
 
@@ -46,7 +58,7 @@ DDS graph shared with the NX instead of a hand-rolled relay.
 - **Preemption is a handshake**: a new trigger cancels, buffers the new scenario, and waits for
   the module to confirm it stopped (`CommandStatus`) before starting — old and new motions never overlap.
 
-Scenarios are JSON5 under `src/cortex_reasoning/config/scenarios/` — see
+Scenarios are JSON5 under `src/cortex_cognition/config/scenarios/` — see
 `refrigerator_pickup.json5` for the hook/criteria schema.
 
 ---
@@ -72,10 +84,18 @@ source env.sh
 
 # Deps
 rosdep install --from-paths src --ignore-src -r -y
-pip install -r requirements.txt          # non-ROS deps (json5, STT/TTS/LLM clients)
+pip install -r requirements.txt          # non-ROS deps (json5, numpy/scipy, STT/TTS clients)
 
 colcon build --symlink-install
+
+# Credentials — Google STT + CLOVA TTS. .env is gitignored; never commit real keys.
+cp .env.example .env
+$EDITOR .env
+set -a && source .env && set +a          # the nodes read os.environ directly
 ```
+
+> No credentials? `stt_node` runs with `backend: dummy` (no cloud, decodes fed text),
+> and `tts_node` warns + drops instead of crashing.
 
 ---
 
@@ -84,7 +104,7 @@ colcon build --symlink-install
 ```bash
 ./scripts/run_cortex.sh                       # env.sh + full node graph
 ros2 launch cortex_bringup cortex.launch.py   # same, if env.sh already sourced
-ros2 launch cortex_speech speech.launch.py    # STT + TTS only
+ros2 launch cortex_bringup speech.launch.py   # STT + TTS only (no cognition)
 ```
 
 Parameters (topics, tick rate, cancel timeout) live in
@@ -126,8 +146,8 @@ Each `TODO(REQ-XX) [TASK-XX]` in code links to the matching Notion page.
 |---|---|
 | Gearsonic Handler interface | `navigation` / `vla` connector dispatch + cancel (stubs) |
 | Handler `CommandStatus` publishing | real stop-confirmation (`_stopped`, `assume_stopped=false`) |
-| Onboard `/bridge/*` audio topic names | `stt_node` / `tts_node` wiring |
 | VLM backend | `vlm_node._evaluate` |
+| `kist-ext-sensor-io` | owns the `/bridge/*` audio publishers. We follow the ICD names; if that repo picks different ones, change `cortex_params.yaml` — not code |
 
 ---
 

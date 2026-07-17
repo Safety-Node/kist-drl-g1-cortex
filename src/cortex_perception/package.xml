@@ -1,18 +1,22 @@
 <?xml version="1.0"?>
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
-  <name>cortex_reasoning</name>
+  <name>cortex_perception</name>
   <version>0.0.1</version>
   <description>
-    Reasoning plane for the cortex: router_node (2-tier fast/slow intent),
-    planner_node (rule-based subtask orchestrator + cancelable Action client),
-    and vlm_node (periodic scene critic that preempts on failure).
+    Perception layer: turns raw sensor streams into symbols the cognition layer
+    can act on. stt_node (AudioPCM -> speech-band filter -> Google Cloud STT bidi
+    streaming -> transcript, with SpeakerState-driven echo cancellation) and
+    vlm_node (camera scene + the active sub-task's success_check -> Verdict).
+    Endpointing comes from the STT backend's is_final results; there is no
+    separate VAD.
   </description>
   <maintainer email="park50260@gmail.com">박성용</maintainer>
   <license>Apache-2.0</license>
 
   <depend>rclpy</depend>
   <depend>std_msgs</depend>
+  <depend>sensor_msgs</depend>
   <depend>g1_onboard_msgs</depend>
   <depend>cortex_msgs</depend>
 

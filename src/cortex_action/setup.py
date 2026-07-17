@@ -3,7 +3,7 @@ from glob import glob
 
 from setuptools import find_packages, setup
 
-package_name = 'cortex_reasoning'
+package_name = 'cortex_action'
 
 setup(
     name=package_name,
@@ -14,20 +14,21 @@ setup(
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
         (os.path.join('share', package_name, 'launch'), glob('launch/*.launch.py')),
-        (os.path.join('share', package_name, 'config'), glob('config/*.yaml')),
-        (os.path.join('share', package_name, 'scenarios'), glob('config/scenarios/*.json5')),
     ],
-    install_requires=['setuptools', 'json5'],
+    install_requires=[
+        'setuptools',
+        'numpy',        # tts resample
+        'aiohttp',      # tts backend (CLOVA REST)
+    ],
     zip_safe=True,
     maintainer='박성용',
     maintainer_email='park50260@gmail.com',
-    description='Hook-driven scenario orchestrator (TaskSrv form) + VLM critic.',
+    description='Action layer: TTS (CLOVA) speech output.',
     license='Apache-2.0',
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'orchestrator_node = cortex_reasoning.orchestrator_node:main',
-            'vlm_node          = cortex_reasoning.vlm_node:main',
+            'tts_node = cortex_action.tts_node:main',
         ],
     },
 )

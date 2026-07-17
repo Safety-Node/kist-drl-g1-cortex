@@ -1,0 +1,28 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>cortex_cognition</name>
+  <version>0.0.1</version>
+  <description>
+    High-level reasoning layer (the "executive"): orchestrator_node sequences a
+    JSON5 scenario's sub-tasks, matches trigger keywords against transcripts,
+    judges success from the perception layer's Verdict, and dispatches each hook
+    to its connector (speak / navigation / vla). Preemption is a two-phase
+    handshake with a pending buffer. Named "cognition", not "reasoning", because
+    the VLA and Gearsonic policies also run inference — this layer is the
+    deliberative one, not every inference in the stack.
+  </description>
+  <maintainer email="park50260@gmail.com">박성용</maintainer>
+  <license>Apache-2.0</license>
+
+  <depend>rclpy</depend>
+  <depend>std_msgs</depend>
+  <depend>g1_onboard_msgs</depend>
+  <depend>cortex_msgs</depend>
+
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

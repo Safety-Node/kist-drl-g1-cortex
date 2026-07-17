@@ -1,4 +1,9 @@
-"""Top-level bringup: speech + reasoning nodes with a shared params file."""
+"""Speech I/O only: STT (perception) + TTS (action).
+
+A subset of cortex.launch.py for exercising the audio path without the cognition
+layer. The two nodes live in different packages now — stt_node is perception
+(audio -> symbols), tts_node is action (the robot speaking).
+"""
 
 import os
 
@@ -16,11 +21,6 @@ def generate_launch_description() -> LaunchDescription:
                     parameters=[params])
 
     return LaunchDescription([
-        # --- perception ---
         node('cortex_perception', 'stt_node'),
-        node('cortex_perception', 'vlm_node'),
-        # --- cognition ---
-        node('cortex_cognition', 'orchestrator_node'),
-        # --- action ---
         node('cortex_action', 'tts_node'),
     ])

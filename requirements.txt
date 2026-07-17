@@ -1,19 +1,20 @@
 # Non-ROS Python dependencies for the cortex cognitive plane.
-# ROS deps (rclpy, std_msgs, ...) come from the Humble apt install, not here.
-# Pin exact versions once the STT/TTS/LLM stack is chosen.
+# ROS deps (rclpy, std_msgs, g1_onboard_msgs, ...) come from the Humble apt
+# install / colcon workspace, not here.
 #
-# TODO(REQ-XX): lock versions after the STT/TTS/LLM providers are decided.
+# Versions mirror kist-drl-g1-workstation's pyproject.toml so the ported STT/TTS
+# paths behave identically.
 
-# --- STT (streaming + VAD) ---
-# faster-whisper            # local streaming STT candidate
-# webrtcvad                 # voice-activity detection / endpointing
-
-# --- TTS (streaming + barge-in) ---
-# (provider TBD)
-
-# --- LLM / planning (slow path only) ---
-# openai                    # or the chosen LLM client
-
-json5                       # scenario files (config/scenarios/*.json5)
-numpy
+# --- scenarios (cortex_cognition) ---
+json5
 pyyaml
+
+# --- audio DSP + resample (perception stt filter, action tts resample) ---
+numpy==1.26.4
+scipy>=1.15.3
+
+# --- STT: Google Cloud Speech-to-Text v1 bidi streaming [REQ-27] ---
+google-cloud-speech>=2.21.0
+
+# --- TTS: Naver CLOVA Voice Premium REST [REQ-29] ---
+aiohttp==3.13.4

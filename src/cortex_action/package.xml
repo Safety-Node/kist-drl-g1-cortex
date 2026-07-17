@@ -1,0 +1,28 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>cortex_action</name>
+  <version>0.0.1</version>
+  <description>
+    Action layer: what the robot does on the PC side. Today that is speech —
+    tts_node (text -> Naver CLOVA Voice -> resample to the 16 kHz wire format ->
+    AudioPCM, cancelable on barge-in / E-STOP).
+
+    The other actions (navigation, VLA) are NOT here: they are real-time control
+    that runs next to the hardware, so cortex only dispatches to them through the
+    cognition layer's connectors. Where those modules are built and launched
+    depends on which host they run on — see the README.
+  </description>
+  <maintainer email="park50260@gmail.com">박성용</maintainer>
+  <license>Apache-2.0</license>
+
+  <depend>rclpy</depend>
+  <depend>std_msgs</depend>
+  <depend>g1_onboard_msgs</depend>
+
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

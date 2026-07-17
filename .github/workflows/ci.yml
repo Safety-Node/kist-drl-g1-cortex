@@ -129,7 +129,7 @@ jobs:
           import json5
           LABELS = {'speak', 'navigation', 'vla'}   # keep in sync with orchestrator connectors
           bad = False
-          paths = sorted(glob.glob('src/cortex_reasoning/config/scenarios/*.json5'))
+          paths = sorted(glob.glob('src/cortex_cognition/config/scenarios/*.json5'))
           if not paths:
               sys.exit('no scenarios found')
           for p in paths:
