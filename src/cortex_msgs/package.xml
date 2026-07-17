@@ -4,10 +4,10 @@
   <name>cortex_msgs</name>
   <version>0.0.1</version>
   <description>
-    Cortex-internal reasoning interfaces for the PC cognitive plane:
-    recognized intents (router), subtask descriptors and orchestration status
-    (planner). Shared robot/control/audio interfaces live in g1_onboard_msgs
-    (SSOT) — do NOT redefine them here.
+    Cortex-internal interfaces for the PC cognitive plane: the active sub-task
+    handed to the VLM critic, its verdict, and orchestration status. Shared
+    robot/control/audio interfaces live in g1_onboard_msgs (SSOT) — do NOT
+    redefine them here.
   </description>
   <maintainer email="park50260@gmail.com">박성용</maintainer>
   <license>Apache-2.0</license>
@@ -19,10 +19,11 @@
   <depend>builtin_interfaces</depend>
 
   <exec_depend>rosidl_default_runtime</exec_depend>
-  <member_of_group>rosidl_interface_packages</member_of_group>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>
+
+  <member_of_group>rosidl_interface_packages</member_of_group>
 
   <export>
     <build_type>ament_cmake</build_type>
