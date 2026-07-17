@@ -1,0 +1,16 @@
+// 처음 위치로 복귀 — 독립 시나리오 (go_fridge.json5의 주석 참고).
+{
+  name: "go_home",
+  triggers: ["집으로 가", "집으로", "처음 위치로", "복귀"],
+  sub_tasks: [
+    {
+      name: "go_home",
+      on_create: [{ speak: "처음 위치로 돌아갑니다." }],
+      on_start:  [{ navigation: "goal:home" }],
+      // TODO(REQ-XX): uwb_pose 도착 판정으로 교체 (delay는 플레이스홀더).
+      success:    { type: "delay", seconds: 30.0, timeout_s: 40.0 },
+      on_success: [{ speak: "처음 위치에 도착했습니다." }],
+      on_fail:    [{ speak: "복귀 이동에 실패했습니다." }],
+    },
+  ],
+}

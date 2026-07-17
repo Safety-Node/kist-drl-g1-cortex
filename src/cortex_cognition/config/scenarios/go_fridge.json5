@@ -1,0 +1,28 @@
+// 냉장고로 이동 — 독립 명령이므로 독립 시나리오.
+//
+// 원본 workstation의 move_test는 leg마다 await_*/go_* 두 sub-task로 쪼개서
+// voice_keyword로 게이트했는데, 그건 "소비된 명령 재호출 무반응"이라는 요구사항을
+// 검증하려던 테스트 아티팩트다. 세 이동 명령은 서로 독립적이므로 각각 시나리오로 둔다.
+// 결과: 게이트 없음, 순서 강제 없음 — 아무 때나 아무 순서로 부를 수 있다.
+//
+// ⚠️ 트리거에 "냉장고" 단독을 넣지 말 것: refrigerator_pickup의
+// "냉장고에서 오이 가져와"와 substring 충돌하고, 파일명 정렬상 이 파일이 먼저라
+// 심부름 명령을 가로챈다. (원본 move_test가 "이동" 단독을 트리거로 두어 자기 자신을
+// 재트리거할 수 있었던 것과 같은 함정.)
+{
+  name: "go_fridge",
+  triggers: ["냉장고로 가", "냉장고로"],
+  sub_tasks: [
+    {
+      name: "go_fridge",
+      on_create: [{ speak: "냉장고로 갑니다." }],
+      on_start:  [{ navigation: "goal:refrigerator" }],
+      // TODO(REQ-XX): uwb_pose 도착 판정으로 교체. delay는 세상에 대해 아무것도
+      // 확인하지 않는 순수 플레이스홀더 — 원본 move_test도 UWB 미캘리브레이션 때문에
+      // uwb_pose에서 delay로 내려가 있었다.
+      success:    { type: "delay", seconds: 30.0, timeout_s: 40.0 },
+      on_success: [{ speak: "냉장고에 도착했습니다." }],
+      on_fail:    [{ speak: "냉장고 이동에 실패했습니다." }],
+    },
+  ],
+}

@@ -1,0 +1,78 @@
+// 레퍼런스 — 시나리오 문법 전시용. **시연 시나리오가 아니다.**
+//
+// 목적: 이 스택으로 시나리오를 쓸 개발자가 문법과 의미를 한 파일에서 보게 하는 것.
+// 실제로 실행 가능하고(트리거: "레퍼런스 테스트") CI가 검증하므로, 문서와 달리 썩지 않는다.
+//
+// ── sub-task 생명주기 ───────────────────────────────────────────────
+//   on_create  → on_start → (매 tick success 폴링) → on_success | on_fail
+//   on_create : 진입 즉시. 보통 안내 멘트.
+//   on_start  : 진입 다음 tick. 실제 동작. **elapsed(=timeout/delay 기준)가 여기서 시작.**
+//   on_success: 성공 시.  on_fail: timeout 시. 실패 메시지는 엔진이 아니라 시나리오 소유.
+//
+// ── hook 라벨 = connector ───────────────────────────────────────────
+//   speak      → tts_node (실동작)
+//   navigation → Nav Planner  (stub — Gearsonic Handler 스펙 대기)  ※ go_*.json5 참고
+//   vla        → VLA inference (stub — 동일)                        ※ refrigerator_pickup 참고
+//
+// ── success.type ────────────────────────────────────────────────────
+//   always / delay / voice_keyword / composite   ← 이 파일에서 전부 시연
+//   vlm                                          ← refrigerator_pickup.json5 참고
+//                                                   (백엔드 stub이라 아직 통과 못 함 →
+//                                                    여기 넣으면 레퍼런스가 항상 실패해서 제외)
+//   uwb_pose / joint_state / voice_choice        ← 미포팅. 쓰면 로드 시 이유와 함께 에러.
+//
+//   type은 필수다. 생략하면 로드 실패 — 조용한 기본값은 없다.
+{
+  name: "reference",
+  // 우발적 발동을 피하려고 일부러 길고 구체적인 트리거를 쓴다.
+  // (트리거는 substring 매칭 + 파일명 정렬순 first-match-wins이라, 짧은 토큰은
+  //  다른 시나리오를 가로챈다 — go_fridge.json5의 "냉장고" 경고 참고.)
+  triggers: ["레퍼런스 테스트"],
+  sub_tasks: [
+    {
+      // ── always: 즉시 통과. 판정할 세상 상태가 없을 때 / dispatch 경로 스모크 테스트.
+      name: "ref_always",
+      on_create: [{ speak: "레퍼런스 테스트를 시작합니다." }],
+      success:   { type: "always" },
+    },
+    {
+      // ── delay: on_start 발사 후 N초. **세상에 대해 아무것도 확인하지 않는다** —
+      //    진짜 완료 신호(uwb_pose/vlm)가 없을 때의 플레이스홀더일 뿐.
+      //    timeout_s > seconds 여야 성공할 수 있다.
+      name: "ref_delay",
+      on_create: [{ speak: "삼 초 기다립니다." }],
+      success:   { type: "delay", seconds: 3.0, timeout_s: 10.0 },
+      on_success: [{ speak: "삼 초 지났습니다." }],
+      on_fail:    [{ speak: "대기에 실패했습니다." }],
+    },
+    {
+      // ── voice_keyword: 이 sub-task가 시작된 뒤에 들린 발화만 검사(버퍼는 진입 시 비워짐).
+      //    맥락 의존적 대답용("응"/"아니"/"오리엔탈로"). 어디서든 통하는 독립 명령이라면
+      //    여기가 아니라 시나리오 `triggers`에 넣는 게 맞다.
+      name: "ref_voice",
+      on_create: [{ speak: "네 라고 대답해 주세요." }],
+      success:   { type: "voice_keyword", keywords: ["네", "예", "응"], timeout_s: 20.0 },
+      on_success: [{ speak: "대답을 들었습니다." }],
+      on_fail:    [{ speak: "대답을 듣지 못했습니다." }],
+    },
+    {
+      // ── composite: children이 **전부** 통과해야 성공 (AND).
+      //    ⚠️ AND는 false positive를 줄이는 대신 false negative를 늘린다 — P(전부)는
+      //       곱이라 어느 child보다도 낮다. 서로 다른 실패 모드를 잡고, false positive가
+      //       더 비쌀 때만 값어치가 있다(예: 파지 = joint_state '뭔가 물었다' AND
+      //       vlm '그게 오이다'). 도착 판정처럼 한 신호가 authority면 AND는 손해다.
+      name: "ref_composite",
+      on_create: [{ speak: "오 초 뒤에 완료 라고 말해 주세요." }],
+      success: {
+        type: "composite",
+        timeout_s: 30.0,
+        children: [
+          { type: "delay", seconds: 5.0 },
+          { type: "voice_keyword", keywords: ["완료", "끝"] },
+        ],
+      },
+      on_success: [{ speak: "레퍼런스 테스트를 마칩니다." }],
+      on_fail:    [{ speak: "레퍼런스 테스트에 실패했습니다." }],
+    },
+  ],
+}
