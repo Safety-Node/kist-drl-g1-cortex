@@ -6,6 +6,15 @@
 // 각 sub-task는 on_create에서 한국어 안내(speak label), on_start에서 실제 동작
 // (navigation / vla label)을 발사하고, 성공은 VLM criterion(씬 판정)으로 본다.
 // navigation / vla 목적지 payload는 placeholder — Gearsonic Handler 스펙 확정 후 채움.
+//
+// ⚠️ 지금은 어느 sub-task도 성공할 수 없다: vlm_node._evaluate가 백엔드 stub이라
+//    항상 False를 반환한다(오판정 방지). 즉 전부 timeout → on_fail. 문법/배선 검증용.
+//    실제로 도는 시나리오를 보려면 go_*.json5(delay) / greet.json5(always) 참고.
+//
+// TODO(REQ-XX): grasp_cucumber는 composite(joint_state AND vlm)이 맞다 — 그리퍼가
+//   '뭔가를 물었다'(기하)와 '그게 오이다'(의미)는 서로 다른 실패 모드를 잡는다.
+//   joint_state가 perception 노드로 들어오면 교체할 것. 반대로 approach_fridge의
+//   도착 판정은 uwb_pose 단독이 맞다(AND는 실패 모드만 추가).
 {
   name: "refrigerator_pickup",
   triggers: ["냉장고에서 오이", "오이 가져와", "오이 하나 가져다", "오이 부탁"],
@@ -15,18 +24,21 @@
       on_create: [{ speak: "냉장고 앞으로 갑니다." }],
       on_start:  [{ navigation: "goal:refrigerator" }],
       success:   { type: "vlm", check: "robot is facing the refrigerator door", timeout_s: 25 },
+      on_fail:   [{ speak: "냉장고로 이동하지 못했습니다." }],
     },
     {
       name: "open_door",
       on_create: [{ speak: "냉장고 문을 엽니다." }],
       on_start:  [{ vla: "Open the refrigerator door with the left hand." }],
       success:   { type: "vlm", check: "refrigerator door is open", timeout_s: 15 },
+      on_fail:   [{ speak: "냉장고 문을 열지 못했습니다." }],
     },
     {
       name: "grasp_cucumber",
       on_create: [{ speak: "오이를 집겠습니다." }],
       on_start:  [{ vla: "Pick up the cucumber from the top shelf." }],
       success:   { type: "vlm", check: "a cucumber is held in the right gripper", timeout_s: 15 },
+      on_fail:   [{ speak: "오이를 집지 못했습니다." }],
     },
     {
       name: "place_on_tray",
@@ -37,6 +49,7 @@
       ],
       success:     { type: "vlm", check: "the cucumber is resting on the tray", timeout_s: 20 },
       on_success:  [{ speak: "오이 가져왔습니다." }],
+      on_fail:     [{ speak: "오이를 tray에 놓지 못했습니다." }],
     },
   ],
 }

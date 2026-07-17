@@ -1,0 +1,24 @@
+// 인사 — 가장 짧은 end-to-end 경로.
+//
+// 발화 → stt_node(Google) → orchestrator 트리거 → speak → tts_node(CLOVA) → 스피커.
+// 로봇을 전혀 안 움직이므로, **STT+TTS 왕복 지연만** 단독으로 재는 프로브로 쓸 수 있다.
+// 0716 전달사항의 "Go2는 '안녕'에 응답까지 10초+" 가 정확히 이 경로다.
+//
+// success: always — 판정할 세상 상태가 없다(말하기가 곧 완료). 즉시 통과하고,
+// speak는 fire-and-forget이라 시나리오가 끝나도 재생은 계속된다(정상 완료 경로는
+// connector를 cancel하지 않는다 — preempt/실패 때만 cancel).
+//
+// on_fail이 없는 이유: always는 첫 폴링에서 통과하므로 timeout 분기에 도달할 수
+// 없다 — on_fail을 달아도 영영 안 불리는 죽은 설정이 된다. 규칙: **실패가 도달
+// 가능한 sub-task에는 전부 on_fail을 단다**(delay/voice_keyword/composite/vlm).
+{
+  name: "greet",
+  triggers: ["안녕"],
+  sub_tasks: [
+    {
+      name: "greet",
+      on_create: [{ speak: "안녕하세요, 제 이름은 홍길동입니다." }],
+      success:   { type: "always" },
+    },
+  ],
+}

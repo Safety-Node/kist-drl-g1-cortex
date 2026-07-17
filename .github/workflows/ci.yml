@@ -127,25 +127,78 @@ jobs:
           python3 - <<'EOF'
           import glob, sys
           import json5
-          LABELS = {'speak', 'navigation', 'vla'}   # keep in sync with orchestrator connectors
+          # Keep in sync with the orchestrator. The node itself fails fast on an
+          # unknown criterion at load; catching it here names the file in CI
+          # instead of at demo time.
+          LABELS = {'speak', 'navigation', 'vla'}
+          CRITERIA = {'vlm', 'always', 'delay', 'voice_keyword', 'composite'}
+          SCENARIO_KEYS = {'name', 'triggers', 'sub_tasks'}
+          SUBTASK_KEYS = {'name', 'on_create', 'on_start', 'on_success', 'on_fail', 'success'}
           bad = False
+
+          def check_criterion(p, name, spec):
+              global bad
+              tag = spec.get('type')                     # required — no implicit default
+              if tag is None:
+                  print(f'{p}: {name} success.type is required')
+                  bad = True
+                  return
+              if tag not in CRITERIA:
+                  print(f'{p}: {name} unknown criterion type {tag!r}; known: {sorted(CRITERIA)}')
+                  bad = True
+                  return
+              for child in spec.get('children', []):     # composite recurses
+                  check_criterion(p, name, child)
+
           paths = sorted(glob.glob('src/cortex_cognition/config/scenarios/*.json5'))
           if not paths:
               sys.exit('no scenarios found')
+          seen_triggers = {}
           for p in paths:
               d = json5.load(open(p, encoding='utf-8'))
-              for key in ('name', 'triggers', 'sub_tasks'):
+              for key in SCENARIO_KEYS:
                   if key not in d:
                       print(f'{p}: missing {key!r}'); bad = True
+              for key in d:                              # silently-ignored keys are a trap
+                  if key not in SCENARIO_KEYS:
+                      print(f'{p}: scenario key {key!r} is not honoured by the engine')
+                      bad = True
+              # Substring collisions ACROSS scenarios only: variants inside one
+              # file are deliberate synonyms ("냉장고로" vs "냉장고로 가").
+              for t in d.get('triggers', []):
+                  for other, op in seen_triggers.items():
+                      if op != p and (t in other or other in t):
+                          print(f'{p}: trigger {t!r} collides with {other!r} from {op} '
+                                '(first match by filename order wins)')
+                          bad = True
+                  seen_triggers[t] = p
               for st in d.get('sub_tasks', []):
                   if 'name' not in st:
                       print(f'{p}: sub_task missing name'); bad = True
-                  for hook in ('on_create', 'on_start', 'on_success'):
+                  for key in st:
+                      if key not in SUBTASK_KEYS:
+                          print(f'{p}: {st.get("name")}: key {key!r} is not honoured '
+                                '(action delay is deliberately unsupported)')
+                          bad = True
+                  for hook in ('on_create', 'on_start', 'on_success', 'on_fail'):
                       for step in st.get(hook, []):
                           for label in step:
                               if label not in LABELS:
                                   print(f'{p}: {st.get("name")}.{hook} unknown label {label!r}')
                                   bad = True
+                  spec = st.get('success', {})
+                  check_criterion(p, st.get('name'), spec)
+                  # A sub-task that can time out must own its failure message;
+                  # 'always' cannot fail, so an on_fail there would be dead config.
+                  can_fail = spec.get('type') != 'always'
+                  if can_fail and not st.get('on_fail'):
+                      print(f'{p}: {st.get("name")}: reachable failure but no on_fail '
+                            '(failure would be silent)')
+                      bad = True
+                  if not can_fail and st.get('on_fail'):
+                      print(f'{p}: {st.get("name")}: on_fail is unreachable under '
+                            "'always' (dead config)")
+                      bad = True
               print(f'{p}: OK ({len(d.get("sub_tasks", []))} sub-tasks)')
           sys.exit(1 if bad else 0)
           EOF
