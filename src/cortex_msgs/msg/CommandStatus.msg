@@ -1,9 +1,13 @@
 # CommandStatus — Handler (onboard / Gearsonic) -> cortex.
 #
-# PROTOTYPE COPY. The canonical proposal is docs/proposals/CommandStatus.msg and
-# this type belongs in g1_onboard_msgs (SSOT). It lives here only so cortex can
-# build + exercise the stop-confirmation wiring now; once it lands in SSOT via
-# PR, import it from g1_onboard_msgs and delete this file. Keep the two in sync.
+# PROTOTYPE. This type is a proposal to the module that owns the Handler, and
+# belongs in g1_onboard_msgs (SSOT) once agreed. It lives here only so cortex can
+# build + exercise the stop-confirmation wiring now; when it lands in SSOT, import
+# it from g1_onboard_msgs and delete this file.
+#
+# The proposal — protocol, sequence, and what we need from the Handler — is written
+# up for the other module developers on the Notion "Unitree-G1" page, under
+# 전달 사항 / 07/17 / 2. Cancel Sync.
 #
 # Publish as a LEVEL-triggered stream (periodic + on-change), QoS RELIABLE +
 # TRANSIENT_LOCAL, so a dropped transition / late subscriber is self-healing.

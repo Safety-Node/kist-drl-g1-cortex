@@ -25,7 +25,7 @@ STT turns sound into symbols (perception), TTS is the robot acting (action).
 | # | Package | Layer | Notes |
 |---|---|---|---|
 | 1 | `g1_onboard_msgs` | — | Shared interfaces submodule (SSOT) — **do not fork** |
-| 2 | `cortex_msgs` | — | Cortex-internal: `Subtask` / `TaskStatus` / `Verdict`. `CommandStatus` is a prototype destined for SSOT (see `docs/proposals/`) |
+| 2 | `cortex_msgs` | — | Cortex-internal: `Subtask` / `TaskStatus` / `Verdict`. `CommandStatus` is a prototype destined for SSOT — proposal written up on the Notion page (전달 사항 / 07/17 / Cancel Sync) |
 | 3 | `cortex_perception` | **인지** | `stt_node` (speech-band filter → Google STT → transcript, echo-cancelled), `vlm_node` (scene + `success_check` → `Verdict`) |
 | 4 | `cortex_cognition` | **상위 추론** | `orchestrator_node` (JSON5 scenarios, hook lifecycle, preemption, connectors) |
 | 5 | `cortex_action` | **제어** | `tts_node` (CLOVA Voice → 16 kHz `AudioPCM`, cancelable) |
