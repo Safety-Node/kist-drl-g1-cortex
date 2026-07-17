@@ -1,0 +1,42 @@
+// 냉장고에서 오이 가져오기 (KIST MBO 시연 1단계) — cortex TaskSrv 포맷.
+//
+// KAPEX: "G1, 냉장고에서 오이 하나 가져다주시겠어요?"
+// G1   : ① 냉장고 이동 → ② 문 개방 → ③ 오이 파지 → ④ 조리대 tray 안착.
+//
+// 각 sub-task는 on_create에서 한국어 안내(speak label), on_start에서 실제 동작
+// (navigation / vla label)을 발사하고, 성공은 VLM criterion(씬 판정)으로 본다.
+// navigation / vla 목적지 payload는 placeholder — Gearsonic Handler 스펙 확정 후 채움.
+{
+  name: "refrigerator_pickup",
+  triggers: ["냉장고에서 오이", "오이 가져와", "오이 하나 가져다", "오이 부탁"],
+  sub_tasks: [
+    {
+      name: "approach_fridge",
+      on_create: [{ speak: "냉장고 앞으로 갑니다." }],
+      on_start:  [{ navigation: "goal:refrigerator" }],
+      success:   { type: "vlm", check: "robot is facing the refrigerator door", timeout_s: 25 },
+    },
+    {
+      name: "open_door",
+      on_create: [{ speak: "냉장고 문을 엽니다." }],
+      on_start:  [{ vla: "Open the refrigerator door with the left hand." }],
+      success:   { type: "vlm", check: "refrigerator door is open", timeout_s: 15 },
+    },
+    {
+      name: "grasp_cucumber",
+      on_create: [{ speak: "오이를 집겠습니다." }],
+      on_start:  [{ vla: "Pick up the cucumber from the top shelf." }],
+      success:   { type: "vlm", check: "a cucumber is held in the right gripper", timeout_s: 15 },
+    },
+    {
+      name: "place_on_tray",
+      on_create: [{ speak: "조리대에 오이를 놓습니다." }],
+      on_start:  [
+        { navigation: "goal:counter" },
+        { vla: "Place the cucumber on the tray." },
+      ],
+      success:     { type: "vlm", check: "the cucumber is resting on the tray", timeout_s: 20 },
+      on_success:  [{ speak: "오이 가져왔습니다." }],
+    },
+  ],
+}

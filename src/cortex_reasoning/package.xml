@@ -1,0 +1,24 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>cortex_reasoning</name>
+  <version>0.0.1</version>
+  <description>
+    Reasoning plane for the cortex: router_node (2-tier fast/slow intent),
+    planner_node (rule-based subtask orchestrator + cancelable Action client),
+    and vlm_node (periodic scene critic that preempts on failure).
+  </description>
+  <maintainer email="park50260@gmail.com">박성용</maintainer>
+  <license>Apache-2.0</license>
+
+  <depend>rclpy</depend>
+  <depend>std_msgs</depend>
+  <depend>g1_onboard_msgs</depend>
+  <depend>cortex_msgs</depend>
+
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

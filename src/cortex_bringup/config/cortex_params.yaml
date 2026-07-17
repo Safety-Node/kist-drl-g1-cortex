@@ -1,0 +1,37 @@
+# Shared parameters for the cortex node graph.
+# Topic names on /bridge/* must match what the onboard stack publishes on the
+# shared DDS bridge domain (post-comm_bridge redesign).
+
+stt_node:
+  ros__parameters:
+    audio_topic: /bridge/sensors/audio/pcm
+    transcript_topic: /cortex/stt/transcript
+    sample_rate: 16000
+    vad_silence_ms: 500
+
+tts_node:
+  ros__parameters:
+    say_topic: /cortex/tts/say
+    barge_in_topic: /cortex/tts/stop
+    speaker_topic: /bridge/actuators/speaker/pcm
+
+orchestrator_node:
+  ros__parameters:
+    # scenario_dir: default = installed share/cortex_reasoning/scenarios.
+    # Override to point at a source dir during development.
+    transcript_topic: /cortex/stt/transcript
+    status_topic: /cortex/task_status
+    verdict_topic: /cortex/critic/verdict
+    active_subtask_topic: /cortex/active_subtask
+    say_topic: /cortex/tts/say
+    handler_status_topic: /bridge/handler/status
+    tick_rate_hz: 10.0
+    cancel_timeout_sec: 2.0    # wait for stop-confirm before escalating (E-STOP)
+    assume_stopped: true       # DEV: no Handler yet. false = use real CommandStatus
+
+vlm_node:
+  ros__parameters:
+    image_topic: /bridge/sensors/camera/color
+    active_subtask_topic: /cortex/active_subtask
+    verdict_topic: /cortex/critic/verdict
+    period_sec: 1.0
