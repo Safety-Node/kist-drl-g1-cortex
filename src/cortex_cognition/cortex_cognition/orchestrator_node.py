@@ -193,7 +193,7 @@ class OrchestratorNode(Node):
         super().__init__('orchestrator_node')
 
         default_dir = os.path.join(
-            get_package_share_directory('cortex_reasoning'), 'scenarios')
+            get_package_share_directory('cortex_cognition'), 'scenarios')
         self.declare_parameter('scenario_dir', default_dir)
         self.declare_parameter('transcript_topic', '/cortex/stt/transcript')
         self.declare_parameter('status_topic', '/cortex/task_status')
