@@ -19,6 +19,7 @@
   <depend>rclpy</depend>
   <depend>std_msgs</depend>
   <depend>g1_onboard_msgs</depend>
+  <depend>cortex_msgs</depend>  <!-- SpeakCommand (in) / CommandStatus (out) -->
 
   <test_depend>python3-pytest</test_depend>
 
