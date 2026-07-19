@@ -51,7 +51,7 @@ from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import (QoSDurabilityPolicy, QoSHistoryPolicy, QoSProfile,
                        QoSReliabilityPolicy)
-from std_msgs.msg import String
+from std_msgs.msg import Bool, String
 
 from cortex_msgs.msg import CommandStatus, Subtask, TaskStatus, Verdict
 
@@ -243,8 +243,12 @@ class Connector(ABC):
         """Send the command, stamped with command_id so the Handler can echo it
         back in CommandStatus."""
 
+    @abstractmethod
     def cancel(self, node: 'OrchestratorNode', command_id: int) -> None:
-        """Best-effort stop of command_id. Override where meaningful."""
+        """Best-effort stop of command_id. Abstract on purpose: cancel is
+        safety-relevant, so every connector must make a deliberate choice rather
+        than inherit a silent no-op. Implement an explicit no-op if there really
+        is nothing to stop."""
 
 
 class SpeakConnector(Connector):
@@ -252,6 +256,12 @@ class SpeakConnector(Connector):
 
     def dispatch(self, node, payload, command_id) -> None:
         node.say_pub.publish(String(data=str(payload)))   # command_id unused
+
+    def cancel(self, node, command_id) -> None:
+        # Barge-in: tell tts_node to cut any in-flight speech. command_id is
+        # unused — speech is not a Handler command. Only cancels PC-side
+        # synthesis; audio already published to the speaker is not recalled.
+        node.stop_pub.publish(Bool(data=True))
 
 
 class NavigationConnector(Connector):
@@ -298,6 +308,7 @@ class OrchestratorNode(Node):
         self.declare_parameter('verdict_topic', '/cortex/critic/verdict')
         self.declare_parameter('active_subtask_topic', '/cortex/active_subtask')
         self.declare_parameter('say_topic', '/cortex/tts/say')
+        self.declare_parameter('stop_topic', '/cortex/tts/stop')   # tts barge-in
         self.declare_parameter('handler_status_topic', '/bridge/handler/status')
         self.declare_parameter('tick_rate_hz', 10.0)
         # How long to wait for a stop-confirmation before escalating (E-STOP).
@@ -353,6 +364,8 @@ class OrchestratorNode(Node):
         self.status_pub = self.create_publisher(TaskStatus, g('status_topic').value, 10)
         self.active_pub = self.create_publisher(Subtask, g('active_subtask_topic').value, 10)
         self.say_pub = self.create_publisher(String, g('say_topic').value, 10)
+        # SpeakConnector.cancel publishes here so a preempt/fail cuts in-flight TTS.
+        self.stop_pub = self.create_publisher(Bool, g('stop_topic').value, 10)
 
         self.create_subscription(
             String, g('transcript_topic').value, self._on_transcript, 10, callback_group=grp)

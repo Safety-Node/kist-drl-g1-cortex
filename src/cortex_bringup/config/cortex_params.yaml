@@ -43,6 +43,7 @@ orchestrator_node:
     verdict_topic: /cortex/critic/verdict
     active_subtask_topic: /cortex/active_subtask
     say_topic: /cortex/tts/say
+    stop_topic: /cortex/tts/stop        # must match tts_node.barge_in_topic
     handler_status_topic: /bridge/handler/status
     tick_rate_hz: 10.0
     cancel_timeout_sec: 2.0    # wait for stop-confirm before escalating (E-STOP)
