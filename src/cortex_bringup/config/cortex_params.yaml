@@ -7,7 +7,7 @@ stt_node:
     # /bridge/* names follow the ICD; kist-ext-sensor-io owns the publisher.
     # If that repo lands on different names, change them here — not in code.
     audio_topic: /bridge/sensors/audio_pcm
-    speaker_state_topic: /bridge/sensors/speaker_state
+    speaker_state_topic: /bridge/audio/speaker_state   # comm_bridge outbound (was /bridge/sensors/* — mismatch)
     estop_topic: /bridge/safety/estop
     transcript_topic: /cortex/stt/transcript
     backend: google_cloud        # google_cloud | dummy (dummy needs no credentials)
