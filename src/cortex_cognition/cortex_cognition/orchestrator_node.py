@@ -11,18 +11,11 @@ A hook step is {label: payload}; the label picks a Connector (speak / navigation
 the tick loop — heavy inference must not block it). Scenarios are JSON5 under
 config/scenarios/.
 
-Every tracked action is registered in {command_id -> InflightCmd}; modules echo
-the command_id in a CommandStatus stream and the registry drops a command on a
-terminal state, so the loop reasons over the set regardless of how many actions a
-sub-task fires. Preemption is a handshake: a new trigger cancels every in-flight
-command, buffers the new scenario, and only starts it once the registry empties
-(or cancel_timeout → escalate). _check_liveness faults a command whose status
-goes stale.
-
-Wired: everything above + speak (tts_node echoes CommandStatus). Stub: nav/vla
-connectors (no CommandStatus yet) and uwb/joint criteria — blocked on the
-Gearsonic Handler / onboard sensors. Hence the dev defaults assume_stopped=True
-and monitor_liveness=False; flip both on with the real sources.
+OPEN-LOOP: connectors fire commands (ActionCmd for speak, stubs for nav/vla) and
+never wait for confirmation. Preemption is immediate — a new trigger cancels the
+current commands (fire-and-forget) and starts the new scenario right away, with no
+CANCELING wait or status monitoring. The old and new motions may briefly overlap;
+that trade-off is accepted for simplicity.
 """
 
 import glob
@@ -37,25 +30,9 @@ from ament_index_python.packages import get_package_share_directory
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
-from rclpy.qos import (QoSDurabilityPolicy, QoSHistoryPolicy, QoSProfile,
-                       QoSReliabilityPolicy)
 from std_msgs.msg import Bool, String
 
-from cortex_msgs.msg import (CommandStatus, SpeakCommand, Subtask, TaskStatus,
-                             Verdict)
-
-# CommandStatus states that mean "this command has stopped" — the registry drops
-# a command when it reaches one, and a cancel is done when the registry is empty.
-_TERMINAL = (CommandStatus.IDLE, CommandStatus.CANCELED,
-             CommandStatus.SUCCEEDED, CommandStatus.ABORTED)
-
-
-@dataclass
-class InflightCmd:
-    """One tracked command the orchestrator has dispatched and is monitoring."""
-    connector: str          # which connector owns it (for cancel / escalate)
-    state: int              # latest CommandStatus.state
-    last_seen: float        # monotonic time of the last status update (staleness)
+from cortex_msgs.msg import ActionCmd, Subtask, TaskStatus, Verdict
 
 
 # ===========================================================================
@@ -218,64 +195,45 @@ def build_criterion(spec: dict) -> Criterion:
 # Connectors — capability-separated dispatch channels (label -> connector)
 # ===========================================================================
 class Connector(ABC):
-    # Every tracked connector is stamped with a command_id, registered, and
-    # monitored the same way. dispatch/cancel/escalate are abstract because both
-    # cancel and escalate are safety-relevant — no silent no-op inheritance.
-    is_tracked: bool = True
+    # Open-loop: dispatch fires a command, cancel fires a stop. Neither waits for
+    # confirmation. Both abstract — cancel is safety-relevant, no silent no-op.
+    @abstractmethod
+    def dispatch(self, node: 'OrchestratorNode', payload) -> None: ...
 
     @abstractmethod
-    def dispatch(self, node: 'OrchestratorNode', payload, command_id: int) -> None: ...
-
-    @abstractmethod
-    def cancel(self, node: 'OrchestratorNode', command_id: int) -> None: ...
-
-    @abstractmethod
-    def escalate(self, node: 'OrchestratorNode', command_id: int) -> None:
-        """Last resort when cancel is not confirmed in time (motion → E-STOP,
-        speech → speaker flush)."""
+    def cancel(self, node: 'OrchestratorNode') -> None: ...
 
 
 class SpeakConnector(Connector):
-    """`speak` -> tts_node. tts echoes command_id in CommandStatus, so tracked."""
+    """`speak` -> tts_node (ActionCmd)."""
 
-    def dispatch(self, node, payload, command_id) -> None:
-        node.say_pub.publish(SpeakCommand(command_id=command_id, text=str(payload)))
+    def dispatch(self, node, payload) -> None:
+        node.say_pub.publish(ActionCmd(text=str(payload)))
 
-    def cancel(self, node, command_id) -> None:
-        # tts has a single in-flight synthesis, so barge-in cuts "the current one"
-        # (no id needed). Only cancels PC-side synthesis; already-published audio
-        # is not recalled. Correlation still holds: tts reports CANCELED with the id.
+    def cancel(self, node) -> None:
+        # Barge-in (fire-and-forget). Only cuts PC-side synthesis; audio already
+        # published to the speaker is not recalled.
         node.stop_pub.publish(Bool(data=True))
-
-    def escalate(self, node, command_id) -> None:
-        # TODO(REQ-XX): flush the NX speaker queue — speaker module not wired yet.
-        node.get_logger().warning(f'(stub) speak escalate cmd#{command_id} — flush TBD')
 
 
 class NavigationConnector(Connector):
     """`navigation` -> LocoCommand / named goal -> Gearsonic Handler (stub)."""
 
-    def dispatch(self, node, payload, command_id) -> None:
-        node.get_logger().info(f'(stub) navigation dispatch cmd#{command_id}: {payload!r}')
+    def dispatch(self, node, payload) -> None:
+        node.get_logger().info(f'(stub) navigation dispatch: {payload!r}')
 
-    def cancel(self, node, command_id) -> None:
-        node.get_logger().info(f'(stub) navigation cancel cmd#{command_id}')
-
-    def escalate(self, node, command_id) -> None:
-        node.get_logger().error(f'(stub) navigation escalate cmd#{command_id} — E-STOP TBD')
+    def cancel(self, node) -> None:
+        node.get_logger().info('(stub) navigation cancel')
 
 
 class VlaConnector(Connector):
     """`vla` -> arm/hand joint inference -> Gearsonic Handler (stub)."""
 
-    def dispatch(self, node, payload, command_id) -> None:
-        node.get_logger().info(f'(stub) vla dispatch cmd#{command_id}: {payload!r}')
+    def dispatch(self, node, payload) -> None:
+        node.get_logger().info(f'(stub) vla dispatch: {payload!r}')
 
-    def cancel(self, node, command_id) -> None:
-        node.get_logger().info(f'(stub) vla cancel cmd#{command_id}')
-
-    def escalate(self, node, command_id) -> None:
-        node.get_logger().error(f'(stub) vla escalate cmd#{command_id} — E-STOP TBD')
+    def cancel(self, node) -> None:
+        node.get_logger().info('(stub) vla cancel')
 
 
 # ===========================================================================
@@ -294,29 +252,11 @@ class OrchestratorNode(Node):
         self.declare_parameter('active_subtask_topic', '/cortex/active_subtask')
         self.declare_parameter('say_topic', '/cortex/tts/say')
         self.declare_parameter('stop_topic', '/cortex/tts/stop')   # tts barge-in
-        # CommandStatus sources feeding the registry: the (future) Handler for
-        # nav/vla, and tts_node for speak. Both publish CommandStatus.
-        self.declare_parameter('handler_status_topic', '/bridge/handler/status')
-        self.declare_parameter('tts_status_topic', '/cortex/tts/status')
         self.declare_parameter('tick_rate_hz', 10.0)
-        # How long to wait for a stop-confirmation before escalating.
-        self.declare_parameter('cancel_timeout_sec', 2.0)
-        # DEV DEFAULT: no Handler publishes CommandStatus yet, so assume a cancel
-        # stops immediately. Set FALSE to exercise the real registry path.
-        self.declare_parameter('assume_stopped', True)
-        # Liveness: fault a tracked command whose status has not updated within
-        # stale_sec. OFF by default — with stub connectors there is no source, so
-        # it would false-fault. Turn on with the real sources.
-        self.declare_parameter('monitor_liveness', False)
-        self.declare_parameter('stale_sec', 0.5)
 
         g = self.get_parameter
         scenario_dir = g('scenario_dir').value
         tick_hz = float(g('tick_rate_hz').value)
-        self._cancel_timeout = float(g('cancel_timeout_sec').value)
-        self._assume_stopped = bool(g('assume_stopped').value)
-        self._monitor_liveness = bool(g('monitor_liveness').value)
-        self._stale_sec = float(g('stale_sec').value)
 
         # --- connectors (label -> connector) ------------------------------
         self.connectors = {
@@ -338,47 +278,22 @@ class OrchestratorNode(Node):
         self._criterion = None           # current sub-task's Criterion
         self._started = False            # on_start fired for current sub-task?
         self._t0 = 0.0                   # current sub-task start time
-        # --- preemption / CANCELING state ---
-        self._canceling = False          # waiting for the module to confirm stop
-        self._cancel_t0 = 0.0            # when the current cancel began
-        self._pending = None             # Scenario to start once stop is confirmed
-        # --- action registry (command_id -> InflightCmd) ------------------
-        # Every tracked command the orchestrator has dispatched and not yet seen
-        # reach a terminal state. A cancel is done when this is empty. Handles
-        # any composition (one motion, nav+vla, speak, ...) uniformly.
-        self._inflight: dict = {}
-        self._command_seq = 0            # monotonic command id source
         # Utterances heard since the current sub-task started (voice_keyword).
         self._transcripts: list = []
 
         # --- io -----------------------------------------------------------
         # One mutually-exclusive group for transcript / verdict / tick so state
         # (_active, _index, latest_verdict, ...) has a single writer at a time.
-        # Ticks are cheap (read cache + publish), so serializing costs nothing.
         grp = MutuallyExclusiveCallbackGroup()
         self.status_pub = self.create_publisher(TaskStatus, g('status_topic').value, 10)
         self.active_pub = self.create_publisher(Subtask, g('active_subtask_topic').value, 10)
-        self.say_pub = self.create_publisher(SpeakCommand, g('say_topic').value, 10)
-        # SpeakConnector.cancel publishes here so a preempt/fail cuts in-flight TTS.
-        self.stop_pub = self.create_publisher(Bool, g('stop_topic').value, 10)
+        self.say_pub = self.create_publisher(ActionCmd, g('say_topic').value, 10)
+        self.stop_pub = self.create_publisher(Bool, g('stop_topic').value, 10)   # tts barge-in
 
         self.create_subscription(
             String, g('transcript_topic').value, self._on_transcript, 10, callback_group=grp)
         self.create_subscription(
             Verdict, g('verdict_topic').value, self._on_verdict, 10, callback_group=grp)
-
-        # CommandStatus sources: latched, reliable stream (see CommandStatus.msg)
-        # so a dropped transition / late subscriber is self-healing. Handler
-        # (nav/vla) and tts_node (speak) both feed the same registry handler.
-        status_qos = QoSProfile(
-            depth=1,
-            history=QoSHistoryPolicy.KEEP_LAST,
-            reliability=QoSReliabilityPolicy.RELIABLE,
-            durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
-        )
-        for topic in (g('handler_status_topic').value, g('tts_status_topic').value):
-            self.create_subscription(
-                CommandStatus, topic, self._on_command_status, status_qos, callback_group=grp)
 
         self.create_timer(1.0 / tick_hz, self._tick, callback_group=grp)
         self.get_logger().info(f'orchestrator_node up (tick={tick_hz}Hz)')
@@ -398,96 +313,25 @@ class OrchestratorNode(Node):
     def _on_verdict(self, msg: Verdict) -> None:
         self.latest_verdict = msg
 
-    def _on_command_status(self, msg: CommandStatus) -> None:
-        # Update the registry; drop on terminal. Unknown id (stale echo, or the
-        # untracked id=0) is ignored.
-        c = self._inflight.get(msg.command_id)
-        if c is None:
-            return
-        c.state = msg.state
-        c.last_seen = self._now()
-        if msg.state in _TERMINAL:
-            del self._inflight[msg.command_id]
-
-    def _next_command_id(self) -> int:
-        self._command_seq += 1
-        return self._command_seq
-
     # --- scenario lifecycle -----------------------------------------------
     def _request(self, sc: Scenario) -> None:
-        """A trigger matched. Start now if idle; otherwise preempt: cancel the
-        running scenario and BUFFER this one until the stop is confirmed."""
-        if self._active is None and not self._canceling:
-            self._begin(sc)
-            return
-        # Buffer the newest request (latest wins) and start canceling if not yet.
-        self._pending = sc
-        if not self._canceling:
+        """A trigger matched. Preempt the running scenario (fire-and-forget cancel)
+        and start the new one immediately — open-loop, no wait."""
+        if self._active is not None:
             self._publish_status(TaskStatus.STATE_PREEMPTED, detail='preempted by new trigger')
-            self._begin_cancel('new trigger')
+            self._stop_current()
+        self._begin(sc)
 
     def _begin(self, sc: Scenario) -> None:
         self.get_logger().info(f'begin scenario {sc.name!r} ({len(sc.sub_tasks)} sub-tasks)')
         self._active = sc
         self._index = 0
         if not sc.sub_tasks:
-            # A scenario with no sub-tasks is a pure stop: _request already
-            # preempted (cancelling the motion), and there is nothing to run.
-            # Settle straight back to idle instead of leaving _active dangling.
+            # A pure "stop" scenario: _request already preempted, nothing to run.
             self._publish_status(TaskStatus.STATE_SUCCEEDED, detail='stop')
             self._reset_exec()
             return
         self._enter_subtask()
-
-    # --- CANCELING: cancel every in-flight command, wait for all, then continue --
-    def _begin_cancel(self, reason: str) -> None:
-        n = len(self._inflight)
-        for cid, c in list(self._inflight.items()):
-            self.connectors[c.connector].cancel(self, cid)
-        self._canceling = True
-        self._cancel_t0 = self._now()
-        self._reset_exec()
-        self.get_logger().info(f'canceling {n} command(s) ({reason})')
-
-    def _service_cancel(self) -> None:
-        if self._cancel_done():
-            self._finish_cancel()
-        elif self._now() - self._cancel_t0 >= self._cancel_timeout:
-            self._escalate()
-
-    def _cancel_done(self) -> bool:
-        # DEV: assume_stopped short-circuits while nav/vla have no status source.
-        return self._assume_stopped or not self._inflight
-
-    def _finish_cancel(self) -> None:
-        self._canceling = False
-        pending, self._pending = self._pending, None
-        if pending is not None:
-            self._begin(pending)         # buffered scenario runs now that we stopped
-        # else: stay idle
-
-    def _escalate(self) -> None:
-        # Cancel not confirmed in time: escalate each remaining command
-        # (motion → E-STOP, speech → flush) and stop tracking — safety is onboard's.
-        self.get_logger().error(
-            f'stop not confirmed in {self._cancel_timeout}s — escalating {len(self._inflight)}')
-        for cid, c in list(self._inflight.items()):
-            self.connectors[c.connector].escalate(self, cid)
-        self._inflight.clear()
-        self._finish_cancel()
-
-    def _check_liveness(self) -> None:
-        # Watchdog for a hung module: a non-terminal command whose status stops
-        # updating. The subtask/cancel timeouts assume the module is alive-but-slow.
-        if not self._monitor_liveness:
-            return
-        now = self._now()
-        for cid, c in list(self._inflight.items()):
-            if c.state not in _TERMINAL and now - c.last_seen > self._stale_sec:
-                self.get_logger().error(
-                    f'command {cid} ({c.connector}) status stale — fault')
-                self.connectors[c.connector].escalate(self, cid)
-                del self._inflight[cid]
 
     def _enter_subtask(self) -> None:
         st = self._current()
@@ -507,10 +351,6 @@ class OrchestratorNode(Node):
         self._publish_status(TaskStatus.STATE_RUNNING, current_subtask=st.name)
 
     def _tick(self) -> None:
-        self._check_liveness()           # a command can hang in any state
-        if self._canceling:              # lifecycle frozen until all stop
-            self._service_cancel()
-            return
         st = self._current()
         if st is None:
             return
@@ -536,31 +376,32 @@ class OrchestratorNode(Node):
             self._reset_exec()
 
     def _fail(self, reason: str) -> None:
-        # Order matters: capture on_fail and publish FAILED while _active still
-        # stands (both gone after _begin_cancel → _reset_exec); cancel BEFORE
-        # announcing so barge-in doesn't cut the on_fail message.
+        # Capture on_fail and publish FAILED while _active still stands (gone after
+        # _stop_current → _reset_exec); cancel BEFORE announcing so barge-in
+        # doesn't cut the on_fail message.
         st = self._current()
         on_fail = st.on_fail if st else []
         self._publish_status(TaskStatus.STATE_FAILED, detail=reason)
-        self._begin_cancel(reason)
+        self._stop_current()
         self._dispatch(on_fail)
+
+    def _stop_current(self) -> None:
+        """Fire-and-forget cancel of the current commands + clear exec state.
+        The caller publishes the status (PREEMPTED / FAILED) first."""
+        for conn in self.connectors.values():
+            conn.cancel(self)
+        self._reset_exec()
 
     # --- helpers ----------------------------------------------------------
     def _dispatch(self, hooks: list) -> None:
-        # Each hook step routes to its connector; every tracked command gets its
-        # OWN id and registry entry, so nav+vla in one sub-task are tracked apart.
+        # Each hook step routes to its connector (fire-and-forget, open-loop).
         for step in hooks:
             for label, payload in step.items():
                 conn = self.connectors.get(label)
                 if conn is None:
                     self.get_logger().warning(f'no connector for label {label!r}')
                     continue
-                if conn.is_tracked:
-                    cid = self._next_command_id()
-                    self._inflight[cid] = InflightCmd(label, CommandStatus.ACCEPTED, self._now())
-                    conn.dispatch(self, payload, cid)
-                else:
-                    conn.dispatch(self, payload, 0)
+                conn.dispatch(self, payload)
 
     def _current(self):
         if self._active and 0 <= self._index < len(self._active.sub_tasks):
@@ -568,7 +409,7 @@ class OrchestratorNode(Node):
         return None
 
     def _reset_exec(self) -> None:
-        """Clear sub-task execution state. Does NOT touch _canceling / _pending."""
+        """Clear sub-task execution state (back to idle)."""
         self._active = None
         self._index = 0
         self._criterion = None

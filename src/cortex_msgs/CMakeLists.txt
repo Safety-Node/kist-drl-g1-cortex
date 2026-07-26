@@ -14,8 +14,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/Subtask.msg"
   "msg/TaskStatus.msg"
   "msg/Verdict.msg"
-  "msg/CommandStatus.msg"
-  "msg/SpeakCommand.msg"
+  "msg/ActionCmd.msg"
   DEPENDENCIES std_msgs builtin_interfaces
 )
 
