@@ -13,6 +13,7 @@
   <exec_depend>cortex_perception</exec_depend>
   <exec_depend>cortex_cognition</exec_depend>
   <exec_depend>cortex_action</exec_depend>
+  <exec_depend>cortex_gui</exec_depend>
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
 

@@ -1,12 +1,12 @@
 """tts_node — Text-to-Speech [REQ-29]. Port of the workstation TTSProvider.
 
-    SpeakCommand (/cortex/tts/say)  -> Clova REST -> resample 16k -> AudioPCM
-                                                                     (/bridge/cmd/audio_out)
+    ActionCmd (/cortex/tts/say)  -> Clova REST -> resample 16k -> AudioPCM
+                                                                  (/bridge/cmd/audio_out)
 
-Synthesis runs on a worker thread (one asyncio.run per call) so the executor never
-blocks on the cloud round-trip. Echoes command_id in a CommandStatus stream
-(/cortex/tts/status) — ACCEPTED → EXECUTING → SUCCEEDED | CANCELED | ABORTED — so
-the orchestrator registry tracks speech like any other action.
+Open-loop: the orchestrator fires ActionCmd; this node synthesizes and publishes,
+and reports no status back. Synthesis runs on a worker thread (one asyncio.run per
+call) so the executor never blocks on the cloud round-trip. Barge-in / E-STOP
+cancel the in-flight synthesis.
 
 PC resamples Clova 24 kHz → 16 kHz (REQ-29). Echo-cancel is passive: NX
 speaker_node raises SpeakerState.playing, stt_node mutes on it. Credentials
@@ -23,24 +23,15 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Optional
 
-import threading
-
 import numpy as np
 import rclpy
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
-from rclpy.qos import (QoSDurabilityPolicy, QoSHistoryPolicy, QoSProfile,
-                       QoSReliabilityPolicy)
 from std_msgs.msg import Bool
 
-from cortex_msgs.msg import CommandStatus, SpeakCommand
+from cortex_msgs.msg import ActionCmd
 from g1_onboard_msgs.msg import AudioPCM, EstopFlag
-
-# CommandStatus states this node actually reaches. CANCELING is skipped —
-# asyncio cancel is effectively instant, there is no wind-down window.
-_TERMINAL = (CommandStatus.IDLE, CommandStatus.CANCELED,
-             CommandStatus.SUCCEEDED, CommandStatus.ABORTED)
 
 
 # ===========================================================================
@@ -86,8 +77,6 @@ class TtsNode(Node):
         # --- parameters -> TTSConfig --------------------------------------
         self.declare_parameter('say_topic', '/cortex/tts/say')
         self.declare_parameter('barge_in_topic', '/cortex/tts/stop')
-        self.declare_parameter('status_topic', '/cortex/tts/status')
-        self.declare_parameter('status_rate_hz', 20.0)   # CommandStatus heartbeat
         self.declare_parameter('audio_out_topic', '/bridge/cmd/audio_out')
         self.declare_parameter('estop_topic', '/bridge/safety/estop')
         self.declare_parameter('backend', TTSBackend.NAVER_CLOVA.value)
@@ -113,13 +102,6 @@ class TtsNode(Node):
         self._estop_active = False
         self._inflight_task: Optional[asyncio.Task] = None
         self._inflight_loop: Optional[asyncio.AbstractEventLoop] = None
-        # CommandStatus the orchestrator registry reads. A terminal state persists
-        # (level-triggered) until the next SpeakCommand replaces it, so a dropped
-        # transition is self-healing. Guarded because it is set from the worker
-        # thread and read/published from the executor.
-        self._status_lock = threading.Lock()
-        self._cmd_id = 0
-        self._state = CommandStatus.IDLE
 
         self._client_id = os.environ.get(self._config.client_id_env)
         self._client_secret = os.environ.get(self._config.client_secret_env)
@@ -133,63 +115,29 @@ class TtsNode(Node):
         # --- io -------------------------------------------------------------
         grp = ReentrantCallbackGroup()
         self.audio_pub = self.create_publisher(AudioPCM, g('audio_out_topic').value, 10)
-        # Status is a latched, reliable stream — same contract the orchestrator
-        # asks of the Gearsonic Handler, so the registry treats speech uniformly.
-        latched = QoSProfile(
-            depth=1, history=QoSHistoryPolicy.KEEP_LAST,
-            reliability=QoSReliabilityPolicy.RELIABLE,
-            durability=QoSDurabilityPolicy.TRANSIENT_LOCAL)
-        self.status_pub = self.create_publisher(
-            CommandStatus, g('status_topic').value, latched)
-
         self.create_subscription(
-            SpeakCommand, g('say_topic').value, self._on_say, 10, callback_group=grp)
+            ActionCmd, g('say_topic').value, self._on_say, 10, callback_group=grp)
         self.create_subscription(
             Bool, g('barge_in_topic').value, self._on_barge_in, 10, callback_group=grp)
         self.create_subscription(
             EstopFlag, g('estop_topic').value, self._on_estop_msg, 10, callback_group=grp)
-
-        # Heartbeat: republish current status so `EXECUTING` during a multi-second
-        # Clova round-trip keeps the registry's staleness clock fresh.
-        self.create_timer(1.0 / float(g('status_rate_hz').value),
-                          self._publish_status, callback_group=grp)
 
         # Synthesis runs here, off the executor thread.
         self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix='tts')
 
         self.get_logger().info(
             f"tts_node up (backend={self._config.backend.value}, voice={self._config.voice}, "
-            f"say={g('say_topic').value} -> {g('audio_out_topic').value}, "
-            f"status={g('status_topic').value})")
+            f"say={g('say_topic').value} -> {g('audio_out_topic').value})")
 
     def destroy_node(self) -> bool:
         self.cancel()
         self._pool.shutdown(wait=False)
         return super().destroy_node()
 
-    # --- status (CommandStatus stream for the orchestrator registry) ------
-    def _set_status(self, cmd_id: int, state: int) -> None:
-        with self._status_lock:
-            self._cmd_id, self._state = cmd_id, state
-        self._publish_status()
-
-    def _publish_status(self) -> None:
-        # Published on transition AND on the heartbeat timer: a non-terminal state
-        # keeps the registry's staleness clock fresh, a terminal state persists
-        # (level-triggered) until the next command.
-        with self._status_lock:
-            cmd_id, state = self._cmd_id, self._state
-        msg = CommandStatus()
-        msg.header.stamp = self.get_clock().now().to_msg()
-        msg.command_id = cmd_id
-        msg.state = state
-        self.status_pub.publish(msg)
-
     # --- subscriptions ----------------------------------------------------
-    def _on_say(self, msg: SpeakCommand) -> None:
+    def _on_say(self, msg: ActionCmd) -> None:
         """Hand the text to the worker; never block the executor."""
-        self._set_status(msg.command_id, CommandStatus.ACCEPTED)
-        self._pool.submit(self._synth_worker, msg.command_id, msg.text)
+        self._pool.submit(self._synth_worker, msg.text)
 
     def _on_barge_in(self, msg: Bool) -> None:
         """Barge-in: user interrupted, cut playback synthesis immediately."""
@@ -211,30 +159,25 @@ class TtsNode(Node):
             self.cancel()
 
     # --- synthesis --------------------------------------------------------
-    def _synth_worker(self, command_id: int, text: str) -> None:
+    def _synth_worker(self, text: str) -> None:
         """One asyncio.run per call — matches the workstation's per-call loop."""
-        self._set_status(command_id, CommandStatus.EXECUTING)
         try:
-            asyncio.run(self.synthesize(command_id, text))
+            asyncio.run(self.synthesize(text))
         except Exception:  # noqa: BLE001 - a failed announcement must not kill the worker
             self.get_logger().exception(f'synthesis worker failed for {text!r}')
-            self._set_status(command_id, CommandStatus.ABORTED)
 
-    async def synthesize(self, command_id: int, text: str) -> None:
+    async def synthesize(self, text: str) -> None:
         """Synthesize ``text`` and publish the PCM stream (fire-and-forget).
 
-        Gate on E-STOP, POST to Clova, decode WAV, resample to the wire rate,
-        publish. Sets the terminal CommandStatus (SUCCEEDED / CANCELED / ABORTED)
-        so the orchestrator registry knows the command stopped.
+        Gate on E-STOP, POST to Clova, decode WAV, resample, publish. On
+        timeout / error / cancel: log + drop (no retry, no status — open-loop).
         """
         if self._estop_active:
             self.get_logger().info(f'synthesize: E-STOP active — aborting (text={text!r})')
-            self._set_status(command_id, CommandStatus.CANCELED)
             return
         text = (text or '').strip()
         if not text or not self._client_id or not self._client_secret:
             self.get_logger().warning(f'synthesize: nothing to do — dropping (text={text!r})')
-            self._set_status(command_id, CommandStatus.ABORTED)
             return
 
         self._inflight_task = asyncio.current_task()
@@ -242,26 +185,20 @@ class TtsNode(Node):
         try:
             wav_bytes = await self._http_post_clova(text)
             if wav_bytes is None:
-                self._set_status(command_id, CommandStatus.ABORTED)
                 return
             # E-STOP / barge-in may have fired during the network round-trip.
             if self._estop_active:
                 self.get_logger().info('synthesize: E-STOP fired mid-request — dropping audio')
-                self._set_status(command_id, CommandStatus.CANCELED)
                 return
             pcm, src_rate, channels = self._decode_wav(wav_bytes)
             if pcm is None:
-                self._set_status(command_id, CommandStatus.ABORTED)
                 return
             self._publish(self._resample_to_wire(pcm, src_rate, channels))
-            self._set_status(command_id, CommandStatus.SUCCEEDED)
         except asyncio.CancelledError:
             self.get_logger().info('synthesize: cancelled (barge-in / E-STOP / stop)')
-            self._set_status(command_id, CommandStatus.CANCELED)
             raise
         except Exception:  # noqa: BLE001 - log + drop, no retry (TTSConfig policy)
             self.get_logger().exception(f'synthesize: failed; dropping (text={text!r})')
-            self._set_status(command_id, CommandStatus.ABORTED)
         finally:
             self._inflight_task = None
             self._inflight_loop = None
