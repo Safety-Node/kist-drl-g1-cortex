@@ -52,3 +52,14 @@ vlm_node:
     active_subtask_topic: /cortex/active_subtask
     verdict_topic: /cortex/critic/verdict
     period_sec: 1.0
+
+gui_bridge_node:
+  ros__parameters:
+    # ROS -> WebSocket egress to the display renderer (kist-drl-g1-gui, REQ-41).
+    # Point the renderer at ws://<this-host>:8081 (its ?ws= query param).
+    status_topic: /cortex/task_status
+    camera_topic: /bridge/sensors/camera/color/compressed
+    camera_transport: compressed   # compressed (forward JPEG) | raw (encode) | none
+    ws_host: 0.0.0.0
+    ws_port: 8081                   # GUIBackground default — must match renderer
+    stream_rate_hz: 15.0
