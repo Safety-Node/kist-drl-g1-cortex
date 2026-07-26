@@ -141,7 +141,7 @@ class SttNode(Node):
         # --- parameters -> STTConfig --------------------------------------
         self.declare_parameter('audio_topic', '/bridge/sensors/audio_pcm')
         self.declare_parameter('transcript_topic', '/cortex/stt/transcript')
-        self.declare_parameter('speaker_state_topic', '/bridge/sensors/speaker_state')
+        self.declare_parameter('speaker_state_topic', '/bridge/audio/speaker_state')
         self.declare_parameter('estop_topic', '/bridge/safety/estop')
         self.declare_parameter('backend', STTBackend.GOOGLE_CLOUD.value)
         self.declare_parameter('language_code', 'ko-KR')
