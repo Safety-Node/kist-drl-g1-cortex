@@ -22,20 +22,20 @@ jobs:
         env:
           BRANCH: ${{ github.head_ref }}
         run: |
-          if [[ ! "$BRANCH" =~ ^(TASK-[0-9]+|chore/.+)$ ]]; then
-            echo "::error::Branch name '$BRANCH' must match TASK-{number} (Notion-linked work) or chore/{description} (non-task housekeeping)"
+          if [[ ! "$BRANCH" =~ ^(SYS-REQ-[0-9]+(-[a-z0-9-]+)?|chore/.+)$ ]]; then
+            echo "::error::Branch name '$BRANCH' must match SYS-REQ-{number}[-description] (SYS-REQ-linked work) or chore/{description} (non-req housekeeping)"
             echo ""
             echo "Examples that pass:"
-            echo "  TASK-42"
-            echo "  TASK-7"
+            echo "  SYS-REQ-12"
+            echo "  SYS-REQ-12-add-nav-goal"
             echo "  chore/fix-typo-in-readme"
             echo "  chore/bump-cyclonedds-dep"
             echo ""
             echo "Examples that fail:"
-            echo "  TASK-42-add-vlm-critic  (suffix not allowed)"
             echo "  feature/vlm             (wrong prefix)"
-            echo "  TASK-Add-VLM            (no number)"
-            echo "  task-42                 (lowercase 'task')"
+            echo "  SYS-REQ-Add-Nav         (no number)"
+            echo "  sys-req-12              (lowercase prefix)"
+            echo "  SYS-REQ-12-Add-Nav      (description must be lowercase kebab)"
             exit 1
           fi
           echo "Branch name OK: $BRANCH"
@@ -48,26 +48,26 @@ jobs:
         env:
           TITLE: ${{ github.event.pull_request.title }}
         run: |
-          # Format: [TASK-{number}] <type>(<scope>)?: <lowercase subject>
+          # Format: ([SYS-REQ-{number}] | [chore]) <type>(<scope>)?: <lowercase subject>
           # Type set follows Conventional Commits.
           # Regex held in a variable so backslash-escaped literals survive bash parsing.
-          re='^(\[TASK-[0-9]+\]|\[chore\]) (feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([a-z0-9_-]+\))?!?: [a-z].+$'
+          re='^(\[SYS-REQ-[0-9]+\]|\[chore\]) (feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([a-z0-9_-]+\))?!?: [a-z].+$'
           if [[ ! "$TITLE" =~ $re ]]; then
-            echo "::error::PR title '$TITLE' must match: ([TASK-{number}] | [chore]) <type>(<scope>)?: <lowercase subject>"
+            echo "::error::PR title '$TITLE' must match: ([SYS-REQ-{number}] | [chore]) <type>(<scope>)?: <lowercase subject>"
             echo ""
             echo "Examples that pass:"
-            echo "  [TASK-42] feat(reasoning): add vlm success criterion"
-            echo "  [TASK-7] fix(speech): drop stale barge-in flag"
-            echo "  [TASK-99] chore(ci): tighten branch regex"
+            echo "  [SYS-REQ-12] feat(nav): add nav goal consumer"
+            echo "  [SYS-REQ-7] fix(speech): drop stale barge-in flag"
+            echo "  [SYS-REQ-99] chore(ci): tighten branch regex"
             echo "  [chore] docs(readme): fix typo in install section"
-            echo "  [chore] chore(deps): bump json5 dep"
+            echo "  [chore] chore(deps): bump dependency"
             echo ""
             echo "Examples that fail:"
-            echo "  feat(reasoning): add vlm criterion    (missing [TASK-{n}] prefix)"
-            echo "  TASK-42 feat(reasoning): add ...      (missing brackets)"
-            echo "  [TASK-42] Feat(reasoning): add ...    (type must be one of: feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)"
-            echo "  [TASK-42] feat(Reasoning): add ...    (scope must be lowercase)"
-            echo "  [TASK-42] feat(reasoning): Add ...    (subject first char must be lowercase -- mid-subject acronyms like VLM are OK)"
+            echo "  feat(nav): add consumer           (missing [SYS-REQ-{n}] prefix)"
+            echo "  SYS-REQ-12 feat(nav): add ...     (missing brackets)"
+            echo "  [SYS-REQ-12] Feat(nav): add ...   (type must be one of: feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)"
+            echo "  [SYS-REQ-12] feat(Nav): add ...   (scope must be lowercase)"
+            echo "  [SYS-REQ-12] feat(nav): Add ...   (subject first char must be lowercase -- mid-subject acronyms like VLM are OK)"
             exit 1
           fi
           echo "PR title OK: $TITLE"
