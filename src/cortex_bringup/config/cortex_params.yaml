@@ -63,3 +63,14 @@ gui_bridge_node:
     ws_host: 0.0.0.0
     ws_port: 8081                   # GUIBackground default — must match renderer
     stream_rate_hz: 15.0
+
+mic_bridge_node:
+  ros__parameters:
+    # Bridges kist-ext-sensor-io's raw kist_msgs::AudioChunk into AudioPCM for
+    # stt_node. Reads the raw DDS topic directly (NOT ROS-mangled) — the string
+    # must match ext-sensor's mic `name` (config.yaml): rt/kist/mic/<name>/audio.
+    audio_chunk_topic: rt/kist/mic/array/audio   # "array" = reSpeaker (16 kHz, no resample)
+    audio_pcm_topic: /bridge/sensors/audio_pcm   # must equal stt_node.audio_topic
+    domain_id: 0                                  # share the robot's DDS domain (as speaker_node)
+    channel: 0                                    # keep this channel; -1 = average all
+    frame_id: mic

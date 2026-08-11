@@ -30,6 +30,7 @@ setup(
         'console_scripts': [
             'stt_node = cortex_perception.stt_node:main',
             'vlm_node = cortex_perception.vlm_node:main',
+            'mic_bridge_node = cortex_perception.mic_bridge_node:main',
         ],
     },
 )

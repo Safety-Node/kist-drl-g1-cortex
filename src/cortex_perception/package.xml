@@ -9,7 +9,8 @@
     streaming -> transcript, with SpeakerState-driven echo cancellation) and
     vlm_node (camera scene + the active sub-task's success_check -> Verdict).
     Endpointing comes from the STT backend's is_final results; there is no
-    separate VAD.
+    separate VAD. mic_bridge_node (kist-ext-sensor-io's raw kist_msgs::AudioChunk
+    -> downmix/resample -> AudioPCM) feeds stt_node from the generic sensor repo.
   </description>
   <maintainer email="park50260@gmail.com">박성용</maintainer>
   <license>Apache-2.0</license>
@@ -19,6 +20,9 @@
   <depend>sensor_msgs</depend>
   <depend>g1_onboard_msgs</depend>
   <depend>cortex_msgs</depend>
+  <!-- mic_bridge_node also needs the `cyclonedds` Python binding (pip; the
+       separate-from-libddsc package) to read ext-sensor's raw AudioChunk, plus
+       numpy/scipy (already used by stt_node) for downmix/resample. -->
 
   <test_depend>python3-pytest</test_depend>
 
