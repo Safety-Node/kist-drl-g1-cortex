@@ -20,6 +20,17 @@ stt_node:
     echo_cancel_tail_ms: 200     # mute this long after SpeakerState.playing clears
     echo_cancel_lead_ms: 0       # pre-mute; needs a tts->stt onset signal, so off
 
+mic_bridge_node:
+  ros__parameters:
+    # ext-sensor raw kist_msgs::AudioChunk -> AudioPCM for stt_node.
+    # audio_chunk_topic is the literal DDS topic (NOT ROS-mangled); it must
+    # match ext-sensor's mic `name` (config.yaml): rt/kist/mic/<name>/audio.
+    audio_chunk_topic: rt/kist/mic/array/audio   # "array" = reSpeaker (16 kHz, no resample)
+    audio_pcm_topic: /bridge/sensors/audio_pcm   # = stt_node.audio_topic
+    domain_id: 0
+    channel: 0                                    # keep this channel; -1 = average all
+    frame_id: mic
+
 tts_node:
   ros__parameters:
     say_topic: /cortex/tts/say          # ActionCmd (orchestrator -> tts)

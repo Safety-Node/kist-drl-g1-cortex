@@ -21,6 +21,8 @@ def generate_launch_description() -> LaunchDescription:
                     parameters=[params])
 
     return LaunchDescription([
+        # ext-sensor AudioChunk -> AudioPCM, so stt_node has audio to consume.
+        node('cortex_perception', 'mic_bridge_node'),
         node('cortex_perception', 'stt_node'),
         node('cortex_action', 'tts_node'),
     ])
