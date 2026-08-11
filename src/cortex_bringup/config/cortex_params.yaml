@@ -63,3 +63,14 @@ gui_bridge_node:
     ws_host: 0.0.0.0
     ws_port: 8081                   # GUIBackground default — must match renderer
     stream_rate_hz: 15.0
+
+speaker_node:
+  ros__parameters:
+    # TTS playback on the robot's built-in speaker via Unitree AudioClient
+    # (a DDS RPC), so this MUST run on a host sharing the robot's DDS domain.
+    audio_out_topic: /bridge/cmd/audio_out        # must equal tts_node.audio_out_topic
+    speaker_state_topic: /bridge/audio/speaker_state  # -> stt_node echo-cancel
+    domain_id: 0                                  # share the robot's DDS domain
+    network_interface: ''                         # patched ChannelFactory.Init ignores it
+    max_queue_depth: 50                           # SpeakerState.queue_depth is uint8 -> [1,255]
+    app_name: cortex_tts                          # AudioClient stream owner tag

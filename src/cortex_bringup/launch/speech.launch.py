@@ -23,4 +23,6 @@ def generate_launch_description() -> LaunchDescription:
     return LaunchDescription([
         node('cortex_perception', 'stt_node'),
         node('cortex_action', 'tts_node'),
+        # tts_node -> AudioPCM -> speaker_node -> robot speaker (Unitree AudioClient).
+        node('cortex_action', 'speaker_node'),
     ])
