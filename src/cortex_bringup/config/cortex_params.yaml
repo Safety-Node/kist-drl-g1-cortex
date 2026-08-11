@@ -34,6 +34,17 @@ tts_node:
     speed: 0                     # Clova [-5, +5]
     request_timeout_s: 5.0       # on timeout: log + drop, no retry
 
+speaker_node:
+  ros__parameters:
+    # tts_node AudioPCM -> robot speaker via Unitree AudioClient (a DDS RPC),
+    # so this must run on a host sharing the robot's DDS domain.
+    audio_out_topic: /bridge/cmd/audio_out        # = tts_node.audio_out_topic
+    speaker_state_topic: /bridge/audio/speaker_state  # -> stt_node echo-cancel
+    domain_id: 0
+    network_interface: ''                         # patched ChannelFactory.Init ignores it
+    max_queue_depth: 50                           # SpeakerState.queue_depth is uint8
+    app_name: cortex_tts
+
 orchestrator_node:
   ros__parameters:
     # scenario_dir: default = installed share/cortex_cognition/scenarios.

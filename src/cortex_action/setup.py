@@ -29,6 +29,7 @@ setup(
     entry_points={
         'console_scripts': [
             'tts_node = cortex_action.tts_node:main',
+            'speaker_node = cortex_action.speaker_node:main',
         ],
     },
 )
