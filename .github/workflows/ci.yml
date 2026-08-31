@@ -180,13 +180,35 @@ jobs:
                           print(f'{p}: {st.get("name")}: key {key!r} is not honoured '
                                 '(action delay is deliberately unsupported)')
                           bad = True
+                  grounded = 0
                   for hook in ('on_create', 'on_start', 'on_success', 'on_fail'):
                       for step in st.get(hook, []):
-                          for label in step:
+                          for label, payload in step.items():
                               if label not in LABELS:
                                   print(f'{p}: {st.get("name")}.{hook} unknown label {label!r}')
                                   bad = True
+                              # Grounded vla: dict payload must be
+                              # {grounded: true, goal: str}, on_start only,
+                              # at most one per sub-task (mirrors the loader).
+                              if label == 'vla' and isinstance(payload, dict):
+                                  grounded += 1
+                                  if not payload.get('grounded') or not isinstance(
+                                          payload.get('goal'), str) or not payload.get('goal'):
+                                      print(f'{p}: {st.get("name")}.{hook} vla dict payload '
+                                            f'must be {{grounded: true, goal: "..."}}')
+                                      bad = True
+                                  if hook != 'on_start':
+                                      print(f'{p}: {st.get("name")}: grounded vla belongs '
+                                            f'in on_start (found in {hook})')
+                                      bad = True
+                  if grounded > 1:
+                      print(f'{p}: {st.get("name")}: at most one grounded vla per sub-task')
+                      bad = True
                   spec = st.get('success', {})
+                  gate = spec.get('progress_gate', 0.0)
+                  if not (isinstance(gate, (int, float)) and 0.0 <= gate < 1.0):
+                      print(f'{p}: {st.get("name")}: progress_gate must be in [0, 1), got {gate!r}')
+                      bad = True
                   check_criterion(p, st.get('name'), spec)
                   # A sub-task that can time out must own its failure message;
                   # 'always' cannot fail, so an on_fail there would be dead config.

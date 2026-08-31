@@ -45,13 +45,36 @@ orchestrator_node:
     say_topic: /cortex/tts/say
     stop_topic: /cortex/tts/stop        # must match tts_node.barge_in_topic
     tick_rate_hz: 10.0
+    # --- planner mode: THE switch between file scenarios and LLM planning.
+    #   static  transcripts match scenario triggers[] (config/scenarios/*.json5)
+    #   llm     every final transcript goes to llm_node; its Plan (same schema)
+    #           is validated by the same loader and run by the same engine
+    planner_mode: static                # static | llm — edit before launch
+    llm_request_topic: /cortex/llm/request
+    llm_plan_topic: /cortex/llm/plan
+    llm_timeout_s: 20.0                 # utterance -> plan budget (llm mode)
+    vla_prompt_topic: /cortex/vla/prompt  # must match vlm_node.vla_prompt_topic
 
 vlm_node:
   ros__parameters:
     image_topic: /bridge/sensors/camera/color
     active_subtask_topic: /cortex/active_subtask
     verdict_topic: /cortex/critic/verdict
+    vla_prompt_topic: /cortex/vla/prompt   # grounded prompts -> orchestrator
+    # VLA policy task_progress. Publisher = kist-vla-inference (its runner
+    # currently DROPS action.task_progress — wiring it up is tracked in the
+    # ICD; until then progress-gated sub-tasks simply never get judged and
+    # fail on their own timeout, which is the safe direction).
+    progress_topic: /cortex/vla/task_progress
     period_sec: 1.0
+
+llm_node:
+  ros__parameters:
+    request_topic: /cortex/llm/request   # must match orchestrator llm_* topics
+    plan_topic: /cortex/llm/plan
+    backend: dummy                       # dummy | openai (openai not wired yet)
+    model: gpt-4o
+    request_timeout_s: 20.0
 
 gui_bridge_node:
   ros__parameters:

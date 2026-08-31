@@ -1,15 +1,24 @@
 """orchestrator_node — hook-driven scenario orchestrator (TaskSrv form, rclpy).
 
-No LLM, no router: a scenario declares its own trigger keywords and an STT
-transcript is matched against them. A scenario is a list of sub-tasks, each a
-small lifecycle machine:
+Two planner modes, switched by the `planner_mode` parameter BEFORE launch
+(cortex_params.yaml) — the execution engine below the plan is identical:
+
+    static  scenarios are JSON5 files under config/scenarios/; each declares
+            its own trigger keywords and a transcript is matched against them.
+    llm     every final transcript is sent to llm_node (PlanRequest); the
+            returned Plan carries a scenario in the SAME schema (as JSON), so
+            it is validated by the same loader and run by the same engine.
+
+A scenario is a list of sub-tasks, each a small lifecycle machine:
 
     on_create → on_start → (poll `success` each tick) → on_success | on_fail
 
 A hook step is {label: payload}; the label picks a Connector (speak / navigation
-/ vla). `success` is a polymorphic Criterion (vlm reads vlm_node's Verdict off
-the tick loop — heavy inference must not block it). Scenarios are JSON5 under
-config/scenarios/.
+/ vla). A vla payload of {grounded: true, goal: "..."} is not sent verbatim:
+the goal goes to vlm_node (via the active Subtask), which grounds it against
+the live scene and returns a VlaPrompt; only then is the vla connector fired.
+`success` is a polymorphic Criterion (vlm reads vlm_node's Verdict off the
+tick loop — heavy inference must not block it).
 
 OPEN-LOOP: connectors fire commands (ActionCmd for speak, stubs for nav/vla) and
 never wait for confirmation. Preemption is immediate — a new trigger cancels the
@@ -21,6 +30,7 @@ that trade-off is accepted for simplicity.
 import glob
 import os
 import time
+import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 
@@ -32,7 +42,9 @@ from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from std_msgs.msg import Bool, String
 
-from cortex_msgs.msg import ActionCmd, Subtask, TaskStatus, Verdict
+from cortex_msgs.msg import (
+    ActionCmd, Plan, PlanRequest, Subtask, TaskStatus, Verdict, VlaPrompt,
+)
 
 
 # ===========================================================================
@@ -48,6 +60,43 @@ class SubTaskDef:
     success: dict = field(default_factory=dict)     # raw spec (kept for the vlm check text)
     criterion: 'Criterion' = None                   # built at LOAD -> fail fast
     timeout_s: float = 30.0
+    goal_text: str = ''                             # abstract goal of a grounded vla step
+    progress_gate: float = 0.0                      # vlm judges only past this task_progress
+
+
+def _grounded_goal(s: dict) -> str:
+    """Extract THE grounded-vla goal of a sub-task ('' if none).
+
+    A grounded vla payload is {grounded: true, goal: "..."}. At most one per
+    sub-task: one Subtask carries one goal_text and one VlaPrompt answers it —
+    two grounded steps would race on the same reply. Fail at load, not mid-run.
+    """
+    goals = []
+    for hook in ('on_create', 'on_start', 'on_success', 'on_fail'):
+        for step in s.get(hook, []):
+            if not isinstance(step, dict):
+                # A hook step must be {label: payload}. Guarded here (load
+                # path) because an LLM plan can hallucinate shapes a hand-
+                # written file never would — and this must reject, not crash.
+                raise ScenarioConfigError(
+                    f"{s.get('name')}.{hook}: step must be {{label: payload}}, "
+                    f'got {step!r}')
+            payload = step.get('vla')
+            if isinstance(payload, dict):
+                if not payload.get('grounded') or not isinstance(
+                        payload.get('goal'), str) or not payload['goal']:
+                    raise ScenarioConfigError(
+                        f"{s.get('name')}: dict vla payload must be "
+                        f"{{grounded: true, goal: \"...\"}}, got {payload!r}")
+                if hook != 'on_start':
+                    raise ScenarioConfigError(
+                        f"{s.get('name')}: grounded vla belongs in on_start "
+                        f'(found in {hook}); other hooks fire without a prompt')
+                goals.append(payload['goal'])
+    if len(goals) > 1:
+        raise ScenarioConfigError(
+            f"{s.get('name')}: at most one grounded vla step per sub-task")
+    return goals[0] if goals else ''
 
 
 @dataclass
@@ -59,6 +108,10 @@ class Scenario:
 
 def _load_subtask(s: dict) -> SubTaskDef:
     spec = s.get('success', {})
+    gate = float(spec.get('progress_gate', 0.0))
+    if not 0.0 <= gate < 1.0:
+        raise ScenarioConfigError(
+            f"{s.get('name')}: progress_gate must be in [0, 1), got {gate}")
     return SubTaskDef(
         name=s['name'],
         on_create=s.get('on_create', []),
@@ -68,7 +121,17 @@ def _load_subtask(s: dict) -> SubTaskDef:
         success=spec,
         criterion=build_criterion(spec),            # raises ScenarioConfigError here
         timeout_s=float(spec.get('timeout_s', 30.0)),
+        goal_text=_grounded_goal(s),
+        progress_gate=gate,
     )
+
+
+def scenario_from_raw(raw: dict) -> Scenario:
+    """One raw scenario dict -> Scenario. Shared by BOTH planner modes: files
+    (load_scenarios) and LLM plans (_on_plan) go through the same validation,
+    so an LLM hallucination fails exactly like a typo in a .json5 would."""
+    subs = [_load_subtask(s) for s in raw.get('sub_tasks', [])]
+    return Scenario(raw['name'], raw.get('triggers', []), subs)
 
 
 def load_scenarios(scenario_dir: str) -> list:
@@ -82,8 +145,7 @@ def load_scenarios(scenario_dir: str) -> list:
         with open(path, 'r', encoding='utf-8') as f:
             raw = json5.load(f)
         try:
-            subs = [_load_subtask(s) for s in raw.get('sub_tasks', [])]
-            scenarios.append(Scenario(raw['name'], raw.get('triggers', []), subs))
+            scenarios.append(scenario_from_raw(raw))
         except (ScenarioConfigError, KeyError, TypeError, ValueError) as exc:
             raise ScenarioConfigError(f'{path}: {exc}') from exc
     return scenarios
@@ -253,10 +315,21 @@ class OrchestratorNode(Node):
         self.declare_parameter('say_topic', '/cortex/tts/say')
         self.declare_parameter('stop_topic', '/cortex/tts/stop')   # tts barge-in
         self.declare_parameter('tick_rate_hz', 10.0)
+        # --- planner mode: static (JSON5 files) | llm (llm_node plans) -----
+        # Set in cortex_params.yaml before launch; not a runtime toggle.
+        self.declare_parameter('planner_mode', 'static')
+        self.declare_parameter('llm_request_topic', '/cortex/llm/request')
+        self.declare_parameter('llm_plan_topic', '/cortex/llm/plan')
+        self.declare_parameter('llm_timeout_s', 20.0)  # utterance -> plan budget
+        self.declare_parameter('vla_prompt_topic', '/cortex/vla/prompt')
 
         g = self.get_parameter
         scenario_dir = g('scenario_dir').value
         tick_hz = float(g('tick_rate_hz').value)
+        self._mode = g('planner_mode').value
+        if self._mode not in ('static', 'llm'):
+            raise ValueError(f"planner_mode must be 'static' or 'llm', got {self._mode!r}")
+        self._llm_timeout_s = float(g('llm_timeout_s').value)
 
         # --- connectors (label -> connector) ------------------------------
         self.connectors = {
@@ -266,9 +339,13 @@ class OrchestratorNode(Node):
         }
 
         # --- scenarios ----------------------------------------------------
+        # Files load in BOTH modes: llm mode does not use their triggers, but a
+        # load failure means broken schema assumptions and should stop startup
+        # regardless of which planner is active.
         self.scenarios = load_scenarios(scenario_dir)
         self.get_logger().info(
-            f'loaded {len(self.scenarios)} scenario(s) from {scenario_dir}')
+            f'loaded {len(self.scenarios)} scenario(s) from {scenario_dir} '
+            f'(planner_mode={self._mode})')
 
         # --- run state (mutated only inside the mutually-exclusive callback
         #     group below, so never by two threads at once — see grp) --------
@@ -280,6 +357,14 @@ class OrchestratorNode(Node):
         self._t0 = 0.0                   # current sub-task start time
         # Utterances heard since the current sub-task started (voice_keyword).
         self._transcripts: list = []
+        # llm mode: the one plan request in flight (None = not waiting).
+        # request_id gates stale plans; deadline bounds a dead llm_node.
+        self._pending_request_id = None
+        self._pending_deadline = 0.0
+        # Grounded-vla handshake for the CURRENT sub-task: prompt text arrives
+        # from vlm_node (VlaPrompt) and is dispatched after on_start.
+        self._awaiting_prompt = False
+        self._prompt_text = None
 
         # --- io -----------------------------------------------------------
         # One mutually-exclusive group for transcript / verdict / tick so state
@@ -290,10 +375,18 @@ class OrchestratorNode(Node):
         self.say_pub = self.create_publisher(ActionCmd, g('say_topic').value, 10)
         self.stop_pub = self.create_publisher(Bool, g('stop_topic').value, 10)   # tts barge-in
 
+        self.plan_req_pub = self.create_publisher(
+            PlanRequest, g('llm_request_topic').value, 10)
+
         self.create_subscription(
             String, g('transcript_topic').value, self._on_transcript, 10, callback_group=grp)
         self.create_subscription(
             Verdict, g('verdict_topic').value, self._on_verdict, 10, callback_group=grp)
+        self.create_subscription(
+            Plan, g('llm_plan_topic').value, self._on_plan, 10, callback_group=grp)
+        self.create_subscription(
+            VlaPrompt, g('vla_prompt_topic').value, self._on_vla_prompt, 10,
+            callback_group=grp)
 
         self.create_timer(1.0 / tick_hz, self._tick, callback_group=grp)
         self.get_logger().info(f'orchestrator_node up (tick={tick_hz}Hz)')
@@ -301,9 +394,12 @@ class OrchestratorNode(Node):
     # --- inputs -----------------------------------------------------------
     def _on_transcript(self, msg: String) -> None:
         text = msg.data
-        # Buffer BEFORE the trigger check: a voice_keyword criterion reads this,
-        # and an early return on a trigger match must not swallow the utterance.
+        # Buffer BEFORE the trigger/plan path: a voice_keyword criterion reads
+        # this, and an early return must not swallow the utterance.
         self._transcripts.append(text)
+        if self._mode == 'llm':
+            self._request_plan(text)
+            return
         for sc in self.scenarios:
             if any(kw in text for kw in sc.triggers):
                 self._request(sc)
@@ -312,6 +408,52 @@ class OrchestratorNode(Node):
 
     def _on_verdict(self, msg: Verdict) -> None:
         self.latest_verdict = msg
+
+    def _on_vla_prompt(self, msg: VlaPrompt) -> None:
+        st = self._current()
+        if st is None or st.name != msg.subtask_id or not self._awaiting_prompt:
+            return  # stale prompt (sub-task advanced/preempted) — must not fire the arm
+        # Cache; _tick dispatches it AFTER on_start so hook order holds even
+        # when grounding finishes before the first tick.
+        self._prompt_text = msg.text
+
+    # --- llm planner ------------------------------------------------------
+    def _request_plan(self, text: str) -> None:
+        """Send the utterance to llm_node. Latest-wins: a newer utterance
+        replaces the pending request; the old plan is dropped by request_id.
+        The RUNNING scenario is preempted only when a valid plan lands —
+        planning failures must not kill a demo in progress."""
+        req = PlanRequest()
+        req.header.stamp = self.get_clock().now().to_msg()
+        req.request_id = uuid.uuid4().hex
+        req.text = text
+        self._pending_request_id = req.request_id
+        self._pending_deadline = self._now() + self._llm_timeout_s
+        self.plan_req_pub.publish(req)
+        self.get_logger().info(f'plan requested {req.request_id}: {text!r}')
+
+    def _on_plan(self, msg: Plan) -> None:
+        if msg.request_id != self._pending_request_id:
+            return  # superseded request — ignore
+        self._pending_request_id = None
+        if not msg.ok:
+            # 'not_a_command' is the LLM's escape hatch for bystander speech /
+            # voice_keyword replies — silent by design. Real failures get a
+            # spoken cue, but only when idle (never talk over a running task).
+            if msg.error != 'not_a_command':
+                self.get_logger().warning(f'plan failed: {msg.error}')
+                if self._active is None:
+                    self.say_pub.publish(ActionCmd(text='명령을 계획하지 못했습니다.'))
+            return
+        try:
+            raw = json5.loads(msg.scenario_json)
+            sc = scenario_from_raw(raw)   # same validator as the file path
+        except (ScenarioConfigError, KeyError, TypeError, ValueError) as exc:
+            self.get_logger().error(f'plan rejected: {exc}')
+            if self._active is None:
+                self.say_pub.publish(ActionCmd(text='계획을 이해하지 못했습니다.'))
+            return
+        self._request(sc)   # preempt-and-begin, same as a static trigger
 
     # --- scenario lifecycle -----------------------------------------------
     def _request(self, sc: Scenario) -> None:
@@ -341,26 +483,49 @@ class OrchestratorNode(Node):
         self._transcripts.clear()        # voice_keyword sees only THIS sub-task's speech
         self._criterion = st.criterion
         self._started = False            # _t0 is set on on_start, not here — see _tick
+        self._awaiting_prompt = bool(st.goal_text)
+        self._prompt_text = None
         self._dispatch(st.on_create)                 # announce
-        # tell vlm_node what to judge
+        # Tell vlm_node what to judge — and, via goal_text, what to ground.
+        # Publishing st.goal_text is what kicks off the VlaPrompt round-trip.
         sub = Subtask()
         sub.id = st.name
         sub.success_check = str(st.success.get('check', st.success.get('type', '')))
         sub.timeout_sec = st.timeout_s
+        sub.goal_text = st.goal_text
+        sub.progress_gate = st.progress_gate
         self.active_pub.publish(sub)
         self._publish_status(TaskStatus.STATE_RUNNING, current_subtask=st.name)
 
     def _tick(self) -> None:
+        # llm mode: bound the utterance -> plan wait even while idle (this is
+        # the only per-tick work that exists outside a running scenario).
+        if (self._pending_request_id is not None
+                and self._now() >= self._pending_deadline):
+            self.get_logger().warning(
+                f'plan request {self._pending_request_id} timed out '
+                f'({self._llm_timeout_s}s) — is llm_node up?')
+            self._pending_request_id = None
+
         st = self._current()
         if st is None:
             return
         if not self._started:
             # _t0 here (on_start), not on entry, so timeout/delay mean "since motion
             # began". Safe this late: the timeout below only runs once _started.
+            # NOTE for grounded vla: the sub-task timeout therefore covers
+            # grounding latency + motion — budget timeout_s accordingly.
             self._t0 = self._now()
             self._dispatch(st.on_start)
             self._started = True
             return
+        if self._awaiting_prompt and self._prompt_text is not None:
+            # Grounded prompt landed: fire the deferred vla step. After
+            # on_start (hook order) and before the criterion check (a verdict
+            # cannot pass a motion that never started).
+            self._awaiting_prompt = False
+            self.connectors['vla'].dispatch(self, self._prompt_text)
+            self._prompt_text = None
         if self._criterion.evaluate(self, st.name):
             self._dispatch(st.on_success)
             self._advance()
@@ -397,6 +562,10 @@ class OrchestratorNode(Node):
         # Each hook step routes to its connector (fire-and-forget, open-loop).
         for step in hooks:
             for label, payload in step.items():
+                if label == 'vla' and isinstance(payload, dict):
+                    # Grounded step — deferred until vlm_node's VlaPrompt
+                    # arrives (dispatched in _tick), never sent verbatim.
+                    continue
                 conn = self.connectors.get(label)
                 if conn is None:
                     self.get_logger().warning(f'no connector for label {label!r}')
@@ -414,6 +583,8 @@ class OrchestratorNode(Node):
         self._index = 0
         self._criterion = None
         self._started = False
+        self._awaiting_prompt = False
+        self._prompt_text = None
 
     def _now(self) -> float:
         return time.monotonic()

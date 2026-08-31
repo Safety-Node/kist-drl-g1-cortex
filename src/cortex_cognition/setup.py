@@ -27,6 +27,7 @@ setup(
     entry_points={
         'console_scripts': [
             'orchestrator_node = cortex_cognition.orchestrator_node:main',
+            'llm_node = cortex_cognition.llm_node:main',
         ],
     },
 )

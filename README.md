@@ -52,7 +52,13 @@ through the cognition layer's connectors. See *Blocked on external specs*.
                 ◀── CommandStatus ── Handler (정지 확인)
 ```
 
-- **No LLM router**: a scenario declares its own `triggers[]`; a transcript is keyword-matched.
+- **Two planner modes** (`planner_mode` in cortex_params.yaml, set before launch):
+  `static` — a scenario declares its own `triggers[]`; a transcript is keyword-matched.
+  `llm` — every final transcript goes to `llm_node`; its plan uses the SAME scenario
+  schema and the same loader/engine. A grounded vla step (`{grounded: true, goal}`) is
+  translated by `vlm_node` into a scene-specific VLA prompt before dispatch, and
+  `progress_gate` holds the VLM verdict until the VLA reports `task_progress` ≥ gate.
+  Design rationale: `docs/architecture-llm-vlm-vla.md`.
 - **Success = VLM**: `vlm_node` judges the scene and publishes a `Verdict`; the orchestrator's
   `VlmCriterion` reads the cache (VLM inference never runs on the tick loop).
 - **Preemption is a handshake**: a new trigger cancels, buffers the new scenario, and waits for

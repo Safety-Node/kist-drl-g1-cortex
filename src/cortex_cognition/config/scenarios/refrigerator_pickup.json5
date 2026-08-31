@@ -27,17 +27,24 @@
       on_fail:   [{ speak: "냉장고로 이동하지 못했습니다." }],
     },
     {
+      // vla 페이로드가 dict({grounded, goal})이면 이 문자열이 그대로 VLA로 가지 않는다:
+      // goal이 Subtask.goal_text로 vlm_node에 전달되고, vlm이 현재 프레임을 보고
+      // 장면 특화 명령문(VlaPrompt)으로 바꿔주면 그때 vla connector가 발사된다.
+      // success.progress_gate: VLA task_progress가 이 값 이상일 때만 vlm이 판정한다
+      // (동작 중간 장면을 실패로 오판하지 않도록). timeout은 grounding+동작을 합쳐 센다.
       name: "open_door",
       on_create: [{ speak: "냉장고 문을 엽니다." }],
-      on_start:  [{ vla: "Open the refrigerator door with the left hand." }],
-      success:   { type: "vlm", check: "refrigerator door is open", timeout_s: 15 },
+      on_start:  [{ vla: { grounded: true, goal: "open the refrigerator door" } }],
+      success:   { type: "vlm", check: "refrigerator door is open", timeout_s: 20,
+                   progress_gate: 0.9 },
       on_fail:   [{ speak: "냉장고 문을 열지 못했습니다." }],
     },
     {
       name: "grasp_cucumber",
       on_create: [{ speak: "오이를 집겠습니다." }],
-      on_start:  [{ vla: "Pick up the cucumber from the top shelf." }],
-      success:   { type: "vlm", check: "a cucumber is held in the right gripper", timeout_s: 15 },
+      on_start:  [{ vla: { grounded: true, goal: "pick up the cucumber from the shelf" } }],
+      success:   { type: "vlm", check: "a cucumber is held in the right gripper", timeout_s: 20,
+                   progress_gate: 0.9 },
       on_fail:   [{ speak: "오이를 집지 못했습니다." }],
     },
     {

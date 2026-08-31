@@ -21,6 +21,9 @@ def generate_launch_description() -> LaunchDescription:
         node('cortex_perception', 'vlm_node'),
         # --- cognition ---
         node('cortex_cognition', 'orchestrator_node'),
+        # llm_node always launches; it idles unless orchestrator_node's
+        # planner_mode is 'llm' (mode switch = one line in cortex_params.yaml).
+        node('cortex_cognition', 'llm_node'),
         # --- action ---
         node('cortex_action', 'tts_node'),
         # --- gui egress ---
