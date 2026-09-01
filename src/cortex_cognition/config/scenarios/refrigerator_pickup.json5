@@ -40,7 +40,11 @@
       on_fail:   [{ speak: "냉장고 문을 열지 못했습니다." }],
     },
     {
+      // precondition: grounded vla 발사 전에 성립해야 하는 장면 조건.
+      // grounding과 같은 VLM 호출에서 판정되어 VlaPrompt에 실려 돌아온다.
+      // 기본은 shadow(경고 로그만) — precondition_enforce: true 여야 실제로 막는다.
       name: "grasp_cucumber",
+      precondition: "the refrigerator door is open and a cucumber is visible",
       on_create: [{ speak: "오이를 집겠습니다." }],
       on_start:  [{ vla: { grounded: true, goal: "pick up the cucumber from the shelf" } }],
       success:   { type: "vlm", check: "a cucumber is held in the right gripper", timeout_s: 20,

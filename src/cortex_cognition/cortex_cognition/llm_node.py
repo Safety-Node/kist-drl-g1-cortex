@@ -55,6 +55,11 @@ commentary) in exactly this schema:
   "sub_tasks": [
     {
       "name": "<snake_case_step_name>",
+      "precondition": "<English scene condition that must hold BEFORE the vla
+                       step fires, e.g. 'the refrigerator door is open'.
+                       OPTIONAL; only legal when on_start has a grounded vla
+                       step. Use it when this step depends on a previous
+                       step's outcome.>",
       "on_create":  [ {"speak": "<Korean announcement>"} ],
       "on_start":   [ <one or more action steps, see labels> ],
       "success":    { <criterion, see below> },
@@ -129,6 +134,8 @@ _DUMMY_PLANS = {
             },
             {
                 'name': 'grasp_cucumber',
+                'precondition': 'the refrigerator door is open and a cucumber '
+                                'is visible',
                 'on_create': [{'speak': '오이를 집겠습니다.'}],
                 'on_start': [{'vla': {'grounded': True,
                                       'goal': 'pick up the cucumber'}}],

@@ -54,6 +54,11 @@ orchestrator_node:
     llm_plan_topic: /cortex/llm/plan
     llm_timeout_s: 20.0                 # utterance -> plan budget (llm mode)
     vla_prompt_topic: /cortex/vla/prompt  # must match vlm_node.vla_prompt_topic
+    # Precondition gate for grounded vla steps.
+    #   false = SHADOW (기본): unmet 판정을 경고 로그로만 남기고 발사는 한다.
+    #   true  = ENFORCE: unmet이면 sub-task를 즉시 실패시킨다.
+    # shadow 로그와 실제 결과(timeout 여부)의 상관을 확인한 뒤에만 true로 올릴 것.
+    precondition_enforce: false
 
 vlm_node:
   ros__parameters:

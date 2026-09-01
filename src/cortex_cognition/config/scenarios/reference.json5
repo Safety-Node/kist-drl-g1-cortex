@@ -19,6 +19,9 @@
 //                     장면 특화 명령문으로 grounding(VlaPrompt)한 뒤 발사. sub-task당 1개,
 //                     on_start에서만 허용(로드 시 검증). success에 progress_gate(예: 0.9)를
 //                     주면 VLA task_progress가 그 값 이상일 때만 vlm이 판정한다.
+//                     sub-task에 precondition("장면 조건")을 주면 grounding과 같은 VLM
+//                     호출에서 전제를 판정한다 — grounded 스텝 필수(로드 검증), 기본은
+//                     shadow(경고만), orchestrator의 precondition_enforce로 승격.
 //
 // ── success.type ────────────────────────────────────────────────────
 //   always / delay / voice_keyword / composite   ← 이 파일에서 전부 시연

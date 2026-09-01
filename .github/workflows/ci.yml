@@ -133,7 +133,8 @@ jobs:
           LABELS = {'speak', 'navigation', 'vla'}
           CRITERIA = {'vlm', 'always', 'delay', 'voice_keyword', 'composite'}
           SCENARIO_KEYS = {'name', 'triggers', 'sub_tasks'}
-          SUBTASK_KEYS = {'name', 'on_create', 'on_start', 'on_success', 'on_fail', 'success'}
+          SUBTASK_KEYS = {'name', 'on_create', 'on_start', 'on_success', 'on_fail',
+                          'success', 'precondition'}
           bad = False
 
           def check_criterion(p, name, spec):
@@ -203,6 +204,12 @@ jobs:
                                       bad = True
                   if grounded > 1:
                       print(f'{p}: {st.get("name")}: at most one grounded vla per sub-task')
+                      bad = True
+                  # precondition rides the grounding round-trip; without a
+                  # grounded step it would silently never run (mirrors loader).
+                  if st.get('precondition') and grounded == 0:
+                      print(f'{p}: {st.get("name")}: precondition requires a '
+                            'grounded vla step in on_start')
                       bad = True
                   spec = st.get('success', {})
                   gate = spec.get('progress_gate', 0.0)

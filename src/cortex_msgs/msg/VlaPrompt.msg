@@ -13,3 +13,12 @@ std_msgs/Header header
 
 string subtask_id    # the Subtask.id this prompt belongs to
 string text          # scene-grounded imperative handed to the VLA as-is
+
+# Precondition report, piggybacked on the grounding call (same frame, same
+# inference). FAIL-OPEN: when the check is empty, unparseable, or the backend
+# errors, precondition_met is true — this gate is an optimization layer, not a
+# safety interlock (that is the E-STOP path), so infrastructure failure must
+# not block motion. The orchestrator decides what to do with an unmet report:
+# shadow mode (default) logs and fires anyway; enforce mode fails the sub-task.
+bool   precondition_met
+string precondition_why    # human-readable reason when unmet ("" otherwise)

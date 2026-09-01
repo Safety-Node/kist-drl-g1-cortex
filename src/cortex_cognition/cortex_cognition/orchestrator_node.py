@@ -62,6 +62,7 @@ class SubTaskDef:
     timeout_s: float = 30.0
     goal_text: str = ''                             # abstract goal of a grounded vla step
     progress_gate: float = 0.0                      # vlm judges only past this task_progress
+    precondition: str = ''                          # scene condition checked before vla fires
 
 
 def _grounded_goal(s: dict) -> str:
@@ -112,6 +113,15 @@ def _load_subtask(s: dict) -> SubTaskDef:
     if not 0.0 <= gate < 1.0:
         raise ScenarioConfigError(
             f"{s.get('name')}: progress_gate must be in [0, 1), got {gate}")
+    goal = _grounded_goal(s)
+    precondition = str(s.get('precondition', ''))
+    if precondition and not goal:
+        # The precondition is judged inside the grounding round-trip; without a
+        # grounded vla step there is no round-trip and the check would silently
+        # never run. Dead config must fail at load, not look like it works.
+        raise ScenarioConfigError(
+            f"{s.get('name')}: precondition requires a grounded vla step "
+            f'({{vla: {{grounded: true, goal: ...}}}} in on_start)')
     return SubTaskDef(
         name=s['name'],
         on_create=s.get('on_create', []),
@@ -121,8 +131,9 @@ def _load_subtask(s: dict) -> SubTaskDef:
         success=spec,
         criterion=build_criterion(spec),            # raises ScenarioConfigError here
         timeout_s=float(spec.get('timeout_s', 30.0)),
-        goal_text=_grounded_goal(s),
+        goal_text=goal,
         progress_gate=gate,
+        precondition=precondition,
     )
 
 
@@ -322,6 +333,11 @@ class OrchestratorNode(Node):
         self.declare_parameter('llm_plan_topic', '/cortex/llm/plan')
         self.declare_parameter('llm_timeout_s', 20.0)  # utterance -> plan budget
         self.declare_parameter('vla_prompt_topic', '/cortex/vla/prompt')
+        # Precondition gate. False = SHADOW: an unmet report is logged but the
+        # vla step still fires. Promote to True only after shadow runs show the
+        # VLM's precondition judgment correlates with real outcomes — enabling
+        # a gate with no accuracy data trades demo reliability for nothing.
+        self.declare_parameter('precondition_enforce', False)
 
         g = self.get_parameter
         scenario_dir = g('scenario_dir').value
@@ -330,6 +346,7 @@ class OrchestratorNode(Node):
         if self._mode not in ('static', 'llm'):
             raise ValueError(f"planner_mode must be 'static' or 'llm', got {self._mode!r}")
         self._llm_timeout_s = float(g('llm_timeout_s').value)
+        self._enforce_precondition = bool(g('precondition_enforce').value)
 
         # --- connectors (label -> connector) ------------------------------
         self.connectors = {
@@ -362,9 +379,12 @@ class OrchestratorNode(Node):
         self._pending_request_id = None
         self._pending_deadline = 0.0
         # Grounded-vla handshake for the CURRENT sub-task: prompt text arrives
-        # from vlm_node (VlaPrompt) and is dispatched after on_start.
+        # from vlm_node (VlaPrompt) and is dispatched after on_start. The
+        # precondition report rides the same message (fail-open default True).
         self._awaiting_prompt = False
         self._prompt_text = None
+        self._precondition_met = True
+        self._precondition_why = ''
 
         # --- io -----------------------------------------------------------
         # One mutually-exclusive group for transcript / verdict / tick so state
@@ -416,6 +436,8 @@ class OrchestratorNode(Node):
         # Cache; _tick dispatches it AFTER on_start so hook order holds even
         # when grounding finishes before the first tick.
         self._prompt_text = msg.text
+        self._precondition_met = msg.precondition_met
+        self._precondition_why = msg.precondition_why
 
     # --- llm planner ------------------------------------------------------
     def _request_plan(self, text: str) -> None:
@@ -485,6 +507,8 @@ class OrchestratorNode(Node):
         self._started = False            # _t0 is set on on_start, not here — see _tick
         self._awaiting_prompt = bool(st.goal_text)
         self._prompt_text = None
+        self._precondition_met = True    # fail-open until a report says otherwise
+        self._precondition_why = ''
         self._dispatch(st.on_create)                 # announce
         # Tell vlm_node what to judge — and, via goal_text, what to ground.
         # Publishing st.goal_text is what kicks off the VlaPrompt round-trip.
@@ -494,6 +518,7 @@ class OrchestratorNode(Node):
         sub.timeout_sec = st.timeout_s
         sub.goal_text = st.goal_text
         sub.progress_gate = st.progress_gate
+        sub.precondition_check = st.precondition
         self.active_pub.publish(sub)
         self._publish_status(TaskStatus.STATE_RUNNING, current_subtask=st.name)
 
@@ -524,6 +549,18 @@ class OrchestratorNode(Node):
             # on_start (hook order) and before the criterion check (a verdict
             # cannot pass a motion that never started).
             self._awaiting_prompt = False
+            if not self._precondition_met:
+                if self._enforce_precondition:
+                    # Fail fast instead of pushing the arm against a world
+                    # that contradicts the plan, then waiting out timeout_s.
+                    self._fail(
+                        f'{st.name} precondition unmet: {self._precondition_why}')
+                    return
+                # SHADOW: log for offline correlation, fire anyway. This line
+                # is the data that justifies (or kills) enforce mode later.
+                self.get_logger().warning(
+                    f'[precondition shadow] {st.name} unmet: '
+                    f'{self._precondition_why} — dispatching regardless')
             self.connectors['vla'].dispatch(self, self._prompt_text)
             self._prompt_text = None
         if self._criterion.evaluate(self, st.name):
@@ -585,6 +622,8 @@ class OrchestratorNode(Node):
         self._started = False
         self._awaiting_prompt = False
         self._prompt_text = None
+        self._precondition_met = True
+        self._precondition_why = ''
 
     def _now(self) -> float:
         return time.monotonic()

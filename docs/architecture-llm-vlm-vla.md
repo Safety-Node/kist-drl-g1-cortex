@@ -101,7 +101,7 @@ LLM 출력 포맷을 **파일 시나리오(JSON5)와 동일한 스키마**로 �
 | `/cortex/llm/request` | `PlanRequest` | orch → llm | request_id 상관, latest-wins |
 | `/cortex/llm/plan` | `Plan` | llm → orch | `scenario_json` = 위 스키마. `ok=false`+`not_a_command` = 방관자 발화 무시 경로 |
 | `/cortex/active_subtask` | `Subtask`(+`goal_text`,`progress_gate`) | orch → vlm | 판정 대상 + 접지 요청을 한 메시지로 |
-| `/cortex/vla/prompt` | `VlaPrompt` | vlm → orch | 접지 결과. orch가 vla connector로 중계 |
+| `/cortex/vla/prompt` | `VlaPrompt` (+`precondition_met`, `precondition_why`) | vlm → orch | 접지 결과 + 전제 판정. orch가 vla connector로 중계 |
 | `/cortex/vla/task_progress` | `std_msgs/Float32` | **vla-inference** → vlm | ⚠️ 외부 배선 필요 — §7 |
 | `/cortex/critic/verdict` | `Verdict` | vlm → orch | 기존. progress_gate 미달 시 **침묵**(발행 안 함) |
 
@@ -111,6 +111,14 @@ LLM 출력 포맷을 **파일 시나리오(JSON5)와 동일한 스키마**로 �
   스택의 모든 액추에이터 명령은 오케스트레이터라는 단일 지점을 지난다 —
   preemption(새 명령/E-STOP 시 취소)을 한 곳에서 보장하기 위해서다. VLM이
   직접 팔을 움직일 수 있는 경로를 만들지 않는다.
+- **precondition은 grounding 왕복에 무임승차한다.** sub-task의 `precondition`
+  ("장면 조건")은 goal_text를 접지하는 **같은 VLM 호출**에서 판정되어 VlaPrompt에
+  실려 돌아온다 — 추가 왕복도 추가 추론도 없다. grounded 스텝 없는 sub-task의
+  precondition은 로드 에러다(왕복이 없어 조용히 죽는 dead config 방지). 판정 실패는
+  **fail-open**(met=true): 이 게이트는 "실패가 뻔한 20초 timeout을 건너뛰는" 최적화지
+  안전 인터록이 아니므로(그건 E-STOP), 인프라 장애가 동작을 막으면 안 된다.
+  기본은 **shadow 모드**(`precondition_enforce: false`) — unmet을 경고 로그로만 남기고
+  발사한다. shadow 로그와 실제 결과의 상관이 확인된 뒤에만 enforce로 승격한다.
 - **progress gate 미달 시 Verdict를 "실패"가 아니라 무발행으로 했다.**
   침묵 = "아직 모름"이며, 시간 상한은 오케스트레이터의 timeout이 소유한다.
   판정자와 시계 소유자를 분리하는 기존 원칙 그대로다.

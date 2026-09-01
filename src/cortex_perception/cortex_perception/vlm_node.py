@@ -137,7 +137,21 @@ class VlmNode(Node):
 
     # --- grounder ---------------------------------------------------------
     def _ground_and_publish(self, sub: Subtask) -> None:
+        # One VLM call answers both questions (same frame, no extra latency):
+        # the grounded imperative AND — when the sub-task carries one — whether
+        # the precondition holds. FAIL-OPEN on the precondition: any backend
+        # error or unparseable answer reports met=True, because this gate is an
+        # optimization (skip a doomed 20s timeout), not a safety interlock.
         text = self._ground(sub.goal_text, self._latest_frame)
+        met, why = True, ''
+        if sub.precondition_check:
+            try:
+                met, why = self._check_precondition(
+                    sub.precondition_check, self._latest_frame)
+            except Exception as exc:  # noqa: BLE001 — fail-open by design
+                self.get_logger().warning(
+                    f'precondition check errored (fail-open): {exc}')
+                met, why = True, ''
         with self._lock:
             still_active = self._current is not None and self._current.id == sub.id
         if not still_active:
@@ -146,8 +160,11 @@ class VlmNode(Node):
         p.header.stamp = self.get_clock().now().to_msg()
         p.subtask_id = sub.id
         p.text = text
+        p.precondition_met = met
+        p.precondition_why = why
         self.prompt_pub.publish(p)
-        self.get_logger().info(f'grounded {sub.id!r}: {text!r}')
+        self.get_logger().info(
+            f'grounded {sub.id!r}: {text!r} (precondition_met={met})')
 
     def _ground(self, goal_text: str, frame) -> str:
         """Ground an abstract goal against the scene into a VLA imperative.
@@ -158,6 +175,18 @@ class VlmNode(Node):
         """
         # TODO(REQ-XX) [TASK-XX]: run the VLM against `frame` + `goal_text`.
         return goal_text
+
+    def _check_precondition(self, check: str, frame) -> tuple:
+        """Return (met, why). Judged in the same grounding call once the real
+        backend lands — ask for prompt + {"precondition_met", "why"} in one
+        structured response.
+
+        STUB: returns met=True (fail-open) so shadow logs stay quiet until a
+        real backend produces actual judgments. The stub must never block a
+        motion — the deliberate opposite of _evaluate's always-False.
+        """
+        # TODO(REQ-XX) [TASK-XX]: fold into the _ground VLM call.
+        return True, 'vlm backend not wired (fail-open)'
 
     def _on_frame(self, msg) -> None:
         with self._lock:

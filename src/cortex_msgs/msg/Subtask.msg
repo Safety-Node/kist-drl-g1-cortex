@@ -14,3 +14,9 @@ string   goal_text       # abstract VLA goal for the VLM to ground ("" = none â€
 float32  progress_gate   # judge only once VLA task_progress >= this (0 = ungated).
                          # Keeps the critic from failing a manipulation that is
                          # still mid-motion; the VLM fires near completion.
+
+string   precondition_check  # scene condition that must hold BEFORE the grounded
+                             # vla step fires ("" = no check). Judged by the VLM
+                             # in the SAME call that grounds goal_text â€” no extra
+                             # inference. Only meaningful with goal_text set
+                             # (enforced by the scenario loader).
