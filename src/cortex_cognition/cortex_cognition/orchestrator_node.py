@@ -390,11 +390,15 @@ class OrchestratorNode(Node):
         self._prompt_text = None
         self._precondition_met = True
         self._precondition_why = ''
-        # Non-grounded precondition (nav etc.): on_start is deferred until the
-        # PreconditionReport lands or the fail-open deadline passes.
+        # Precondition gate — UNIFIED: when a sub-task declares a precondition,
+        # the ENTIRE on_start (combo steps included) is deferred until the
+        # verdict lands. Grounded: verdict rides the VlaPrompt (wait bounded by
+        # timeout_s — the prompt is required data, no fail-open). Non-grounded:
+        # PreconditionReport, fail-open after precondition_timeout_s.
         self._awaiting_precondition = False
         self._precondition_received = False
         self._precondition_deadline = 0.0
+        self._wait_t0 = 0.0              # gate-wait start (pre-on_start clock)
 
         # --- io -----------------------------------------------------------
         # One mutually-exclusive group for transcript / verdict / tick so state
@@ -451,6 +455,9 @@ class OrchestratorNode(Node):
         self._prompt_text = msg.text
         self._precondition_met = msg.precondition_met
         self._precondition_why = msg.precondition_why
+        # For a grounded sub-task WITH a precondition, this message IS the
+        # verdict — it releases the deferred on_start (see _tick).
+        self._precondition_received = True
 
     def _on_precondition_report(self, msg: PreconditionReport) -> None:
         # Non-grounded sub-tasks only (grounded ones get their verdict on the
@@ -532,12 +539,14 @@ class OrchestratorNode(Node):
         self._prompt_text = None
         self._precondition_met = True    # fail-open until a report says otherwise
         self._precondition_why = ''
-        # Non-grounded precondition (nav etc.): defer on_start for the report,
-        # bounded by the fail-open deadline. Grounded sub-tasks get their
-        # verdict on the VlaPrompt instead, gating only the vla dispatch.
-        self._awaiting_precondition = bool(st.precondition) and not st.goal_text
+        # UNIFIED precondition gate: any sub-task with a precondition defers
+        # its ENTIRE on_start (combo nav/speak steps included — nothing may
+        # move before the verdict). Grounded: verdict rides the VlaPrompt.
+        # Non-grounded: PreconditionReport, fail-open after the deadline.
+        self._awaiting_precondition = bool(st.precondition)
         self._precondition_received = False
         self._precondition_deadline = self._now() + self._precondition_timeout_s
+        self._wait_t0 = self._now()
         self._dispatch(st.on_create)                 # announce
         # Tell vlm_node what to judge — and, via goal_text, what to ground.
         # Publishing st.goal_text is what kicks off the VlaPrompt round-trip.
@@ -565,11 +574,11 @@ class OrchestratorNode(Node):
         if st is None:
             return
         if not self._started:
-            # Generalized precondition (non-grounded, e.g. nav): the ENTIRE
-            # on_start waits for the report — the robot must not start moving
-            # into a world that contradicts the plan. Bounded by the fail-open
-            # deadline; the sub-task timeout has not started yet (_t0 below),
-            # so this wait does not eat the motion budget.
+            # UNIFIED precondition gate: the ENTIRE on_start waits for the
+            # verdict — nothing (nav in a combo step included) may start
+            # moving into a world that contradicts the plan. The sub-task
+            # timeout has not started (_t0 below), so this wait does not eat
+            # the motion budget.
             if self._awaiting_precondition:
                 if self._precondition_received:
                     self._awaiting_precondition = False
@@ -578,22 +587,36 @@ class OrchestratorNode(Node):
                             self._fail(f'{st.name} precondition unmet: '
                                        f'{self._precondition_why}')
                             return
+                        # SHADOW: log for offline correlation, start anyway.
+                        # This line is the data that justifies (or kills)
+                        # enforce mode later.
                         self.get_logger().warning(
                             f'[precondition shadow] {st.name} unmet: '
                             f'{self._precondition_why} — starting regardless')
+                elif st.goal_text:
+                    # Grounded: the verdict rides the VlaPrompt, whose text is
+                    # REQUIRED data for the motion — no fail-open possible.
+                    # Bound the wait with the sub-task's own timeout instead,
+                    # so a dead vlm_node cannot hang the plan forever.
+                    if self._now() - self._wait_t0 >= st.timeout_s:
+                        self._fail(f'{st.name} grounding/precondition wait '
+                                   f'timeout ({st.timeout_s}s)')
+                    return
                 elif self._now() < self._precondition_deadline:
-                    return   # keep waiting (on_create already ran)
+                    return   # non-grounded: keep waiting (on_create already ran)
                 else:
-                    # FAIL OPEN: vlm_node silent past the deadline. This gate
-                    # is an optimization, not an interlock — proceed.
+                    # Non-grounded FAIL OPEN: vlm_node silent past the
+                    # deadline. The gate is an optimization, not an interlock,
+                    # and this motion needs nothing from the VLM — proceed.
                     self._awaiting_precondition = False
                     self.get_logger().warning(
                         f'{st.name}: no precondition report within '
                         f'{self._precondition_timeout_s}s — fail-open, starting')
-            # _t0 here (on_start), not on entry, so timeout/delay mean "since motion
-            # began". Safe this late: the timeout below only runs once _started.
-            # NOTE for grounded vla: the sub-task timeout therefore covers
-            # grounding latency + motion — budget timeout_s accordingly.
+            # _t0 here (on_start), not on entry, so timeout/delay mean "since
+            # motion began". For a sub-task WITH a precondition the gate wait
+            # above ran before this clock — timeout_s budgets pure motion.
+            # WITHOUT one, a grounded sub-task's timeout still covers
+            # grounding latency + motion (the vla step fires below, later).
             self._t0 = self._now()
             self._dispatch(st.on_start)
             self._started = True
@@ -601,20 +624,9 @@ class OrchestratorNode(Node):
         if self._awaiting_prompt and self._prompt_text is not None:
             # Grounded prompt landed: fire the deferred vla step. After
             # on_start (hook order) and before the criterion check (a verdict
-            # cannot pass a motion that never started).
+            # cannot pass a motion that never started). The precondition was
+            # already settled at the pre-on_start gate — no re-check here.
             self._awaiting_prompt = False
-            if not self._precondition_met:
-                if self._enforce_precondition:
-                    # Fail fast instead of pushing the arm against a world
-                    # that contradicts the plan, then waiting out timeout_s.
-                    self._fail(
-                        f'{st.name} precondition unmet: {self._precondition_why}')
-                    return
-                # SHADOW: log for offline correlation, fire anyway. This line
-                # is the data that justifies (or kills) enforce mode later.
-                self.get_logger().warning(
-                    f'[precondition shadow] {st.name} unmet: '
-                    f'{self._precondition_why} — dispatching regardless')
             self.connectors['vla'].dispatch(self, self._prompt_text)
             self._prompt_text = None
         if self._criterion.evaluate(self, st.name):

@@ -16,10 +16,12 @@ float32  progress_gate   # judge only once VLA task_progress >= this (0 = ungate
                          # still mid-motion; the VLM fires near completion.
 
 string   precondition_check  # scene condition that must hold BEFORE this
-                             # sub-task's motion fires ("" = no check).
+                             # sub-task starts ("" = no check). UNIFIED gate:
+                             # the orchestrator defers the ENTIRE on_start
+                             # (combo steps included) until the verdict lands.
                              # With goal_text: judged in the SAME call that
-                             # grounds it, answered on the VlaPrompt.
-                             # Without goal_text (nav etc.): judged in a
-                             # dedicated call, answered as PreconditionReport;
-                             # the orchestrator defers on_start for it,
-                             # fail-open after precondition_timeout_s.
+                             # grounds it, answered on the VlaPrompt (wait
+                             # bounded by timeout_s — prompt is required data).
+                             # Without goal_text (nav etc.): answered as
+                             # PreconditionReport, fail-open after
+                             # precondition_timeout_s.

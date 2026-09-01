@@ -112,16 +112,24 @@ LLM 출력 포맷을 **파일 시나리오(JSON5)와 동일한 스키마**로 �
   preemption(새 명령/E-STOP 시 취소)을 한 곳에서 보장하기 위해서다. VLM이
   직접 팔을 움직일 수 있는 경로를 만들지 않는다.
 - **precondition = "이 sub-task를 지금 실행할 수 있는가"** — 모든 sub-task에 쓸 수
-  있다. grounded vla 스텝이 있으면 goal_text를 접지하는 **같은 VLM 호출**에 합승해
-  VlaPrompt로 돌아오고(vla 발사만 게이트), 없으면(nav 등) **전용 판정**이
-  PreconditionReport로 돌아오며 orchestrator가 **on_start 전체를 유예**한다.
-  비-grounded 대기는 `precondition_timeout_s`(3s)로 상한 — 리포트가 안 오면
-  **fail-open으로 출발**한다(vlm_node가 죽어도 VLM이 필요 없는 이동이 발이 묶이면
-  안 된다). 판정 에러도 fail-open(met=true): 이 게이트는 최적화지 안전 인터록이
-  아니다(그건 E-STOP). 단, 동적 장애물(사람 난입)의 연속 감시는 nav 스택·safety
-  레이어 몫 — start-time 스냅샷은 그 대체물이 아니다. 기본은 **shadow 모드**
-  (`precondition_enforce: false`) — unmet을 경고 로그로만 남기고 진행하며, shadow
-  로그와 실제 결과의 상관이 확인된 뒤에만 enforce로 승격한다.
+  있고, 게이트 규칙은 **통일**돼 있다: precondition이 선언되면 판정 도착까지
+  **on_start 전체가 유예**된다. combo sub-task(`on_start: [{navigation}, {vla}]`)의
+  nav 스텝도 판정 전에는 나가지 않는다 — "정책상 움직이면 안 되는" 상태에서
+  어떤 액추에이터도 출발하지 않는 것이 이 게이트의 계약이다.
+  판정 회신 경로는 둘: grounded vla 스텝이 있으면 goal_text를 접지하는 **같은
+  VLM 호출**에 합승해 VlaPrompt가 판정 겸 프롬프트로 돌아온다(프롬프트가 필수
+  데이터라 fail-open이 불가능하므로 대기 상한 = sub-task의 timeout_s). 없으면
+  (nav 등) **전용 판정**이 PreconditionReport로 돌아오고, `precondition_timeout_s`
+  (3s) 안에 안 오면 **fail-open으로 출발**한다(vlm_node가 죽어도 VLM이 필요 없는
+  이동이 발이 묶이면 안 된다). 판정 에러도 fail-open(met=true).
+  timeout 의미: precondition이 있는 sub-task는 게이트 대기가 `_t0`(동작 시계)
+  이전에 끝나므로 timeout_s가 순수 동작 시간을 예산한다. 없는 grounded
+  sub-task는 기존대로 grounding+동작을 합산한다.
+  이 게이트는 최적화지 안전 인터록이 아니며(그건 E-STOP), 동적 장애물(사람
+  난입)의 연속 감시는 nav 스택·safety 레이어 몫 — start-time 스냅샷은 그
+  대체물이 아니다. 기본은 **shadow 모드**(`precondition_enforce: false`) —
+  unmet을 경고 로그로만 남기고 진행하며, shadow 로그와 실제 결과의 상관이
+  확인된 뒤에만 enforce로 승격한다.
 - **progress gate 미달 시 Verdict를 "실패"가 아니라 무발행으로 했다.**
   침묵 = "아직 모름"이며, 시간 상한은 오케스트레이터의 timeout이 소유한다.
   판정자와 시계 소유자를 분리하는 기존 원칙 그대로다.

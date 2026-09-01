@@ -44,8 +44,9 @@
       on_fail:   [{ speak: "냉장고 문을 열지 못했습니다." }],
     },
     {
-      // precondition: grounded vla 발사 전에 성립해야 하는 장면 조건.
-      // grounding과 같은 VLM 호출에서 판정되어 VlaPrompt에 실려 돌아온다.
+      // precondition: 이 sub-task 시작 전에 성립해야 하는 장면 조건. 판정 도착까지
+      // on_start 전체가 유예되며, grounded 스텝이 있으므로 grounding과 같은 VLM
+      // 호출에서 판정되어 VlaPrompt에 실려 돌아온다 (대기 상한 = timeout_s).
       // 기본은 shadow(경고 로그만) — precondition_enforce: true 여야 실제로 막는다.
       name: "grasp_cucumber",
       precondition: "the refrigerator door is open and a cucumber is visible",

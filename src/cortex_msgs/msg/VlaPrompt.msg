@@ -7,7 +7,9 @@
 # your right hand under the door handle and pull."
 #
 # The orchestrator holds the vla dispatch for the sub-task until this arrives
-# (the sub-task timeout keeps a missing prompt from hanging the plan).
+# — and, when the sub-task declares a precondition, the ENTIRE on_start (this
+# message doubles as the precondition verdict). The sub-task timeout keeps a
+# missing prompt from hanging the plan in either case.
 
 std_msgs/Header header
 

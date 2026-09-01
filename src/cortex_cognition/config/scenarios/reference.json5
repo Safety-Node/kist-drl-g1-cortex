@@ -19,9 +19,10 @@
 //                     장면 특화 명령문으로 grounding(VlaPrompt)한 뒤 발사. sub-task당 1개,
 //                     on_start에서만 허용(로드 시 검증). success에 progress_gate(예: 0.9)를
 //                     주면 VLA task_progress가 그 값 이상일 때만 vlm이 판정한다.
-//                     sub-task에 precondition("장면 조건")을 주면 동작 시작 전에 전제를
-//                     판정한다 — grounded 스텝이 있으면 grounding VLM 호출에 합승(vla
-//                     발사만 게이트), 없으면(nav 등) 전용 판정으로 on_start 전체를 유예
+//                     sub-task에 precondition("장면 조건")을 주면 판정 도착까지 on_start
+//                     전체가 유예된다(통일 규칙 — combo의 nav 스텝도 판정 전에 안 나감).
+//                     grounded 스텝이 있으면 grounding VLM 호출에 합승(VlaPrompt가 판정 겸
+//                     프롬프트, 대기 상한 timeout_s), 없으면(nav 등) 전용 판정
 //                     (precondition_timeout_s 넘기면 fail-open 출발). 기본은 shadow(경고만),
 //                     orchestrator의 precondition_enforce로 승격.
 //

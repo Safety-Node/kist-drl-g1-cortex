@@ -54,9 +54,12 @@ orchestrator_node:
     llm_plan_topic: /cortex/llm/plan
     llm_timeout_s: 20.0                 # utterance -> plan budget (llm mode)
     vla_prompt_topic: /cortex/vla/prompt  # must match vlm_node.vla_prompt_topic
-    # Precondition gate (모든 sub-task에 사용 가능).
-    #   grounded vla 스텝 있음: grounding VLM 호출에 합승, vla 발사만 게이트.
-    #   없음(nav 등): 전용 판정(PreconditionReport), on_start 전체를 유예.
+    # Precondition gate (모든 sub-task에 사용 가능) — 통일 규칙:
+    # precondition이 있으면 판정 도착까지 on_start 전체를 유예한다 (combo
+    # sub-task의 nav 스텝도 판정 전에 나가지 않는다).
+    #   grounded vla 스텝 있음: grounding VLM 호출에 합승, VlaPrompt가 판정 겸
+    #     프롬프트. 대기 상한 = timeout_s (프롬프트가 필수 데이터라 fail-open 불가).
+    #   없음(nav 등): 전용 판정(PreconditionReport), 아래 3s 넘기면 fail-open.
     #   false = SHADOW (기본): unmet 판정을 경고 로그로만 남기고 진행한다.
     #   true  = ENFORCE: unmet이면 sub-task를 즉시 실패시킨다.
     # shadow 로그와 실제 결과(timeout 여부)의 상관을 확인한 뒤에만 true로 올릴 것.
