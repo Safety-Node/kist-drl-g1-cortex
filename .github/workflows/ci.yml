@@ -205,12 +205,6 @@ jobs:
                   if grounded > 1:
                       print(f'{p}: {st.get("name")}: at most one grounded vla per sub-task')
                       bad = True
-                  # precondition rides the grounding round-trip; without a
-                  # grounded step it would silently never run (mirrors loader).
-                  if st.get('precondition') and grounded == 0:
-                      print(f'{p}: {st.get("name")}: precondition requires a '
-                            'grounded vla step in on_start')
-                      bad = True
                   spec = st.get('success', {})
                   gate = spec.get('progress_gate', 0.0)
                   if not (isinstance(gate, (int, float)) and 0.0 <= gate < 1.0):

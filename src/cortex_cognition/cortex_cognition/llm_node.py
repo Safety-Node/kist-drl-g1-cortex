@@ -55,11 +55,12 @@ commentary) in exactly this schema:
   "sub_tasks": [
     {
       "name": "<snake_case_step_name>",
-      "precondition": "<English scene condition that must hold BEFORE the vla
-                       step fires, e.g. 'the refrigerator door is open'.
-                       OPTIONAL; only legal when on_start has a grounded vla
-                       step. Use it when this step depends on a previous
-                       step's outcome.>",
+      "precondition": "<English scene condition that must hold BEFORE this
+                       step's motion starts, e.g. 'the refrigerator door is
+                       open' or, for navigation, 'the path ahead is clear'.
+                       OPTIONAL, legal on any step. Use it when the step
+                       depends on a previous step's outcome or on a scene
+                       premise worth checking before moving.>",
       "on_create":  [ {"speak": "<Korean announcement>"} ],
       "on_start":   [ <one or more action steps, see labels> ],
       "success":    { <criterion, see below> },
@@ -116,6 +117,7 @@ _DUMMY_PLANS = {
         'sub_tasks': [
             {
                 'name': 'approach_fridge',
+                'precondition': 'the path ahead of the robot is clear',
                 'on_create': [{'speak': '냉장고 앞으로 갑니다.'}],
                 'on_start': [{'navigation': 'goal:refrigerator'}],
                 'success': {'type': 'vlm',

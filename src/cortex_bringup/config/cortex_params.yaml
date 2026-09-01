@@ -54,11 +54,17 @@ orchestrator_node:
     llm_plan_topic: /cortex/llm/plan
     llm_timeout_s: 20.0                 # utterance -> plan budget (llm mode)
     vla_prompt_topic: /cortex/vla/prompt  # must match vlm_node.vla_prompt_topic
-    # Precondition gate for grounded vla steps.
-    #   false = SHADOW (기본): unmet 판정을 경고 로그로만 남기고 발사는 한다.
+    # Precondition gate (모든 sub-task에 사용 가능).
+    #   grounded vla 스텝 있음: grounding VLM 호출에 합승, vla 발사만 게이트.
+    #   없음(nav 등): 전용 판정(PreconditionReport), on_start 전체를 유예.
+    #   false = SHADOW (기본): unmet 판정을 경고 로그로만 남기고 진행한다.
     #   true  = ENFORCE: unmet이면 sub-task를 즉시 실패시킨다.
     # shadow 로그와 실제 결과(timeout 여부)의 상관을 확인한 뒤에만 true로 올릴 것.
     precondition_enforce: false
+    precondition_report_topic: /cortex/precondition/report
+    # 비-grounded 판정 대기 상한. 넘기면 fail-open으로 그냥 출발한다 —
+    # vlm_node가 죽어도 VLM이 필요 없는 이동이 발이 묶이면 안 된다.
+    precondition_timeout_s: 3.0
 
 vlm_node:
   ros__parameters:
@@ -66,6 +72,7 @@ vlm_node:
     active_subtask_topic: /cortex/active_subtask
     verdict_topic: /cortex/critic/verdict
     vla_prompt_topic: /cortex/vla/prompt   # grounded prompts -> orchestrator
+    precondition_report_topic: /cortex/precondition/report  # 비-grounded 전제 판정
     # VLA policy task_progress. Publisher = kist-vla-inference (its runner
     # currently DROPS action.task_progress — wiring it up is tracked in the
     # ICD; until then progress-gated sub-tasks simply never get judged and

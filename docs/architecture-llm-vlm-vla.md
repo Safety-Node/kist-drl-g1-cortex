@@ -111,14 +111,17 @@ LLM 출력 포맷을 **파일 시나리오(JSON5)와 동일한 스키마**로 �
   스택의 모든 액추에이터 명령은 오케스트레이터라는 단일 지점을 지난다 —
   preemption(새 명령/E-STOP 시 취소)을 한 곳에서 보장하기 위해서다. VLM이
   직접 팔을 움직일 수 있는 경로를 만들지 않는다.
-- **precondition은 grounding 왕복에 무임승차한다.** sub-task의 `precondition`
-  ("장면 조건")은 goal_text를 접지하는 **같은 VLM 호출**에서 판정되어 VlaPrompt에
-  실려 돌아온다 — 추가 왕복도 추가 추론도 없다. grounded 스텝 없는 sub-task의
-  precondition은 로드 에러다(왕복이 없어 조용히 죽는 dead config 방지). 판정 실패는
-  **fail-open**(met=true): 이 게이트는 "실패가 뻔한 20초 timeout을 건너뛰는" 최적화지
-  안전 인터록이 아니므로(그건 E-STOP), 인프라 장애가 동작을 막으면 안 된다.
-  기본은 **shadow 모드**(`precondition_enforce: false`) — unmet을 경고 로그로만 남기고
-  발사한다. shadow 로그와 실제 결과의 상관이 확인된 뒤에만 enforce로 승격한다.
+- **precondition = "이 sub-task를 지금 실행할 수 있는가"** — 모든 sub-task에 쓸 수
+  있다. grounded vla 스텝이 있으면 goal_text를 접지하는 **같은 VLM 호출**에 합승해
+  VlaPrompt로 돌아오고(vla 발사만 게이트), 없으면(nav 등) **전용 판정**이
+  PreconditionReport로 돌아오며 orchestrator가 **on_start 전체를 유예**한다.
+  비-grounded 대기는 `precondition_timeout_s`(3s)로 상한 — 리포트가 안 오면
+  **fail-open으로 출발**한다(vlm_node가 죽어도 VLM이 필요 없는 이동이 발이 묶이면
+  안 된다). 판정 에러도 fail-open(met=true): 이 게이트는 최적화지 안전 인터록이
+  아니다(그건 E-STOP). 단, 동적 장애물(사람 난입)의 연속 감시는 nav 스택·safety
+  레이어 몫 — start-time 스냅샷은 그 대체물이 아니다. 기본은 **shadow 모드**
+  (`precondition_enforce: false`) — unmet을 경고 로그로만 남기고 진행하며, shadow
+  로그와 실제 결과의 상관이 확인된 뒤에만 enforce로 승격한다.
 - **progress gate 미달 시 Verdict를 "실패"가 아니라 무발행으로 했다.**
   침묵 = "아직 모름"이며, 시간 상한은 오케스트레이터의 timeout이 소유한다.
   판정자와 시계 소유자를 분리하는 기존 원칙 그대로다.
@@ -180,15 +183,10 @@ CI는 실행 없이 데이터를 검증한다: 시나리오 스키마 검사기�
 - **VLM 주기 접지 갱신** — 지금은 sub-task당 1회 접지. 장면이 크게 변하면
   VlaPrompt를 재발행하는 것으로 확장 가능 (orchestrator는 이미 최신 프롬프트만
   쓰므로 수신측 변경 불요).
-- **precondition 일반화 (nav 포함)** — precondition의 정의는 "이 sub-task를 지금
-  실행할 수 있는 상황인가"이며, 개념적으로 navigation에도 정당하다(LiDAR가 못
-  보는 유리·바닥 케이블, "사람이 통로에 있으면 출발 억제" 같은 시연 규범).
-  현재 grounded 전용인 것은 의미론이 아니라 구현 경제성이다 — grounded 스텝엔
-  공짜 VLM 왕복이 있고, nav엔 전용 호출(+시작 지연 ~1초)이 새로 든다.
-  일반화: 판정을 grounding에서 분리해 모든 sub-task의 on_start 이전 게이트로
-  올리고, grounded 스텝이 있으면 한 호출로 합친다(최적화로 강등). 단, 동적
-  장애물(사람 난입)의 연속 감시는 nav 스택·safety 레이어 몫이다 — start-time
-  스냅샷 체크는 그 대체물이 아니다.
+- ~~precondition 일반화 (nav 포함)~~ — **구현됨** (§4 참고). nav 등 비-grounded
+  sub-task도 precondition을 선언하면 전용 VLM 판정(PreconditionReport)이
+  on_start를 게이트한다(fail-open 3s). 남은 것: 실물 VLM 백엔드가 붙은 뒤
+  shadow 데이터로 판정 정확도 검증 → enforce 승격 판단.
 
 **큰 구조 변경 (별도 논의):**
 - **closed-loop 전환** — 현재 open-loop(발사 후 확인 없음)는 의도된 단순화.

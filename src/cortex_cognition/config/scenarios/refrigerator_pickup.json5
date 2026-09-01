@@ -20,7 +20,11 @@
   triggers: ["냉장고에서 오이", "오이 가져와", "오이 하나 가져다", "오이 부탁"],
   sub_tasks: [
     {
+      // nav에도 precondition 사용 가능: grounding 왕복이 없으므로 vlm이 전용
+      // 판정(PreconditionReport)을 하고, orchestrator는 on_start를 최대
+      // precondition_timeout_s(3s)까지 유예한다 (안 오면 fail-open으로 출발).
       name: "approach_fridge",
+      precondition: "the path ahead of the robot is clear",
       on_create: [{ speak: "냉장고 앞으로 갑니다." }],
       on_start:  [{ navigation: "goal:refrigerator" }],
       success:   { type: "vlm", check: "robot is facing the refrigerator door", timeout_s: 25 },

@@ -43,7 +43,8 @@ from rclpy.node import Node
 from std_msgs.msg import Bool, String
 
 from cortex_msgs.msg import (
-    ActionCmd, Plan, PlanRequest, Subtask, TaskStatus, Verdict, VlaPrompt,
+    ActionCmd, Plan, PlanRequest, PreconditionReport, Subtask, TaskStatus,
+    Verdict, VlaPrompt,
 )
 
 
@@ -114,14 +115,11 @@ def _load_subtask(s: dict) -> SubTaskDef:
         raise ScenarioConfigError(
             f"{s.get('name')}: progress_gate must be in [0, 1), got {gate}")
     goal = _grounded_goal(s)
+    # precondition is legal on ANY sub-task. With a grounded vla step it rides
+    # the grounding call (VlaPrompt); without one (nav etc.) vlm_node runs a
+    # dedicated check and the orchestrator defers on_start for its
+    # PreconditionReport (fail-open after precondition_timeout_s).
     precondition = str(s.get('precondition', ''))
-    if precondition and not goal:
-        # The precondition is judged inside the grounding round-trip; without a
-        # grounded vla step there is no round-trip and the check would silently
-        # never run. Dead config must fail at load, not look like it works.
-        raise ScenarioConfigError(
-            f"{s.get('name')}: precondition requires a grounded vla step "
-            f'({{vla: {{grounded: true, goal: ...}}}} in on_start)')
     return SubTaskDef(
         name=s['name'],
         on_create=s.get('on_create', []),
@@ -334,10 +332,16 @@ class OrchestratorNode(Node):
         self.declare_parameter('llm_timeout_s', 20.0)  # utterance -> plan budget
         self.declare_parameter('vla_prompt_topic', '/cortex/vla/prompt')
         # Precondition gate. False = SHADOW: an unmet report is logged but the
-        # vla step still fires. Promote to True only after shadow runs show the
+        # motion still fires. Promote to True only after shadow runs show the
         # VLM's precondition judgment correlates with real outcomes — enabling
         # a gate with no accuracy data trades demo reliability for nothing.
         self.declare_parameter('precondition_enforce', False)
+        self.declare_parameter('precondition_report_topic', '/cortex/precondition/report')
+        # Non-grounded sub-tasks defer on_start for their PreconditionReport at
+        # most this long, then FAIL OPEN — a dead vlm_node must not strand a
+        # motion that needs nothing from the VLM. (Grounded sub-tasks need the
+        # prompt text anyway, so they keep waiting under the sub-task timeout.)
+        self.declare_parameter('precondition_timeout_s', 3.0)
 
         g = self.get_parameter
         scenario_dir = g('scenario_dir').value
@@ -347,6 +351,7 @@ class OrchestratorNode(Node):
             raise ValueError(f"planner_mode must be 'static' or 'llm', got {self._mode!r}")
         self._llm_timeout_s = float(g('llm_timeout_s').value)
         self._enforce_precondition = bool(g('precondition_enforce').value)
+        self._precondition_timeout_s = float(g('precondition_timeout_s').value)
 
         # --- connectors (label -> connector) ------------------------------
         self.connectors = {
@@ -385,6 +390,11 @@ class OrchestratorNode(Node):
         self._prompt_text = None
         self._precondition_met = True
         self._precondition_why = ''
+        # Non-grounded precondition (nav etc.): on_start is deferred until the
+        # PreconditionReport lands or the fail-open deadline passes.
+        self._awaiting_precondition = False
+        self._precondition_received = False
+        self._precondition_deadline = 0.0
 
         # --- io -----------------------------------------------------------
         # One mutually-exclusive group for transcript / verdict / tick so state
@@ -407,6 +417,9 @@ class OrchestratorNode(Node):
         self.create_subscription(
             VlaPrompt, g('vla_prompt_topic').value, self._on_vla_prompt, 10,
             callback_group=grp)
+        self.create_subscription(
+            PreconditionReport, g('precondition_report_topic').value,
+            self._on_precondition_report, 10, callback_group=grp)
 
         self.create_timer(1.0 / tick_hz, self._tick, callback_group=grp)
         self.get_logger().info(f'orchestrator_node up (tick={tick_hz}Hz)')
@@ -438,6 +451,16 @@ class OrchestratorNode(Node):
         self._prompt_text = msg.text
         self._precondition_met = msg.precondition_met
         self._precondition_why = msg.precondition_why
+
+    def _on_precondition_report(self, msg: PreconditionReport) -> None:
+        # Non-grounded sub-tasks only (grounded ones get their verdict on the
+        # VlaPrompt). Stale reports — sub-task advanced or preempted — drop.
+        st = self._current()
+        if st is None or st.name != msg.subtask_id or not self._awaiting_precondition:
+            return
+        self._precondition_met = msg.met
+        self._precondition_why = msg.why
+        self._precondition_received = True
 
     # --- llm planner ------------------------------------------------------
     def _request_plan(self, text: str) -> None:
@@ -509,6 +532,12 @@ class OrchestratorNode(Node):
         self._prompt_text = None
         self._precondition_met = True    # fail-open until a report says otherwise
         self._precondition_why = ''
+        # Non-grounded precondition (nav etc.): defer on_start for the report,
+        # bounded by the fail-open deadline. Grounded sub-tasks get their
+        # verdict on the VlaPrompt instead, gating only the vla dispatch.
+        self._awaiting_precondition = bool(st.precondition) and not st.goal_text
+        self._precondition_received = False
+        self._precondition_deadline = self._now() + self._precondition_timeout_s
         self._dispatch(st.on_create)                 # announce
         # Tell vlm_node what to judge — and, via goal_text, what to ground.
         # Publishing st.goal_text is what kicks off the VlaPrompt round-trip.
@@ -536,6 +565,31 @@ class OrchestratorNode(Node):
         if st is None:
             return
         if not self._started:
+            # Generalized precondition (non-grounded, e.g. nav): the ENTIRE
+            # on_start waits for the report — the robot must not start moving
+            # into a world that contradicts the plan. Bounded by the fail-open
+            # deadline; the sub-task timeout has not started yet (_t0 below),
+            # so this wait does not eat the motion budget.
+            if self._awaiting_precondition:
+                if self._precondition_received:
+                    self._awaiting_precondition = False
+                    if not self._precondition_met:
+                        if self._enforce_precondition:
+                            self._fail(f'{st.name} precondition unmet: '
+                                       f'{self._precondition_why}')
+                            return
+                        self.get_logger().warning(
+                            f'[precondition shadow] {st.name} unmet: '
+                            f'{self._precondition_why} — starting regardless')
+                elif self._now() < self._precondition_deadline:
+                    return   # keep waiting (on_create already ran)
+                else:
+                    # FAIL OPEN: vlm_node silent past the deadline. This gate
+                    # is an optimization, not an interlock — proceed.
+                    self._awaiting_precondition = False
+                    self.get_logger().warning(
+                        f'{st.name}: no precondition report within '
+                        f'{self._precondition_timeout_s}s — fail-open, starting')
             # _t0 here (on_start), not on entry, so timeout/delay mean "since motion
             # began". Safe this late: the timeout below only runs once _started.
             # NOTE for grounded vla: the sub-task timeout therefore covers
@@ -624,6 +678,8 @@ class OrchestratorNode(Node):
         self._prompt_text = None
         self._precondition_met = True
         self._precondition_why = ''
+        self._awaiting_precondition = False
+        self._precondition_received = False
 
     def _now(self) -> float:
         return time.monotonic()

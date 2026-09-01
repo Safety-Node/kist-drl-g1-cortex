@@ -31,7 +31,7 @@ from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from std_msgs.msg import Float32
 
-from cortex_msgs.msg import Subtask, Verdict, VlaPrompt
+from cortex_msgs.msg import PreconditionReport, Subtask, Verdict, VlaPrompt
 
 # from sensor_msgs.msg import Image        # camera on the bridge domain
 
@@ -44,6 +44,7 @@ class VlmNode(Node):
         self.declare_parameter('active_subtask_topic', '/cortex/active_subtask')
         self.declare_parameter('verdict_topic', '/cortex/critic/verdict')
         self.declare_parameter('vla_prompt_topic', '/cortex/vla/prompt')
+        self.declare_parameter('precondition_report_topic', '/cortex/precondition/report')
         # Published by kist-vla-inference (task_progress head of the policy —
         # currently dropped in its runner; wiring tracked in the ICD).
         self.declare_parameter('progress_topic', '/cortex/vla/task_progress')
@@ -62,6 +63,8 @@ class VlmNode(Node):
         self.pub = self.create_publisher(Verdict, g('verdict_topic').value, 10)
         self.prompt_pub = self.create_publisher(
             VlaPrompt, g('vla_prompt_topic').value, 10)
+        self.precondition_pub = self.create_publisher(
+            PreconditionReport, g('precondition_report_topic').value, 10)
         self.create_subscription(
             Subtask, g('active_subtask_topic').value, self._on_active_subtask, 10,
             callback_group=grp)
@@ -95,6 +98,13 @@ class VlmNode(Node):
             # VLM inference and must not block subtask/progress callbacks.
             threading.Thread(
                 target=self._ground_and_publish, args=(msg,), daemon=True).start()
+        elif msg.precondition_check:
+            # No grounding round-trip to ride (nav etc.) — dedicated check.
+            # The orchestrator is deferring on_start for this report, bounded
+            # by its own fail-open deadline, so a slow/dead backend here can
+            # delay but never strand the motion.
+            threading.Thread(
+                target=self._precheck_and_publish, args=(msg,), daemon=True).start()
 
     def _on_progress(self, msg: Float32) -> None:
         with self._lock:
@@ -175,6 +185,29 @@ class VlmNode(Node):
         """
         # TODO(REQ-XX) [TASK-XX]: run the VLM against `frame` + `goal_text`.
         return goal_text
+
+    def _precheck_and_publish(self, sub: Subtask) -> None:
+        """Dedicated precondition check for sub-tasks without a grounded goal."""
+        try:
+            met, why = self._check_precondition(
+                sub.precondition_check, self._latest_frame)
+        except Exception as exc:  # noqa: BLE001 — fail-open by design
+            self.get_logger().warning(
+                f'precondition check errored (fail-open): {exc}')
+            met, why = True, ''
+        with self._lock:
+            still_active = self._current is not None and self._current.id == sub.id
+        if not still_active:
+            return  # superseded — a stale report must not gate a new sub-task
+        r = PreconditionReport()
+        r.header.stamp = self.get_clock().now().to_msg()
+        r.subtask_id = sub.id
+        r.met = met
+        r.why = why
+        self.precondition_pub.publish(r)
+        self.get_logger().info(
+            f'precondition {sub.id!r}: met={met}'
+            + (f' ({why})' if not met else ''))
 
     def _check_precondition(self, check: str, frame) -> tuple:
         """Return (met, why). Judged in the same grounding call once the real

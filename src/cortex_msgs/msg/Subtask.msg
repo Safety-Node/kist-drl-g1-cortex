@@ -15,8 +15,11 @@ float32  progress_gate   # judge only once VLA task_progress >= this (0 = ungate
                          # Keeps the critic from failing a manipulation that is
                          # still mid-motion; the VLM fires near completion.
 
-string   precondition_check  # scene condition that must hold BEFORE the grounded
-                             # vla step fires ("" = no check). Judged by the VLM
-                             # in the SAME call that grounds goal_text — no extra
-                             # inference. Only meaningful with goal_text set
-                             # (enforced by the scenario loader).
+string   precondition_check  # scene condition that must hold BEFORE this
+                             # sub-task's motion fires ("" = no check).
+                             # With goal_text: judged in the SAME call that
+                             # grounds it, answered on the VlaPrompt.
+                             # Without goal_text (nav etc.): judged in a
+                             # dedicated call, answered as PreconditionReport;
+                             # the orchestrator defers on_start for it,
+                             # fail-open after precondition_timeout_s.
