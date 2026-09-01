@@ -180,6 +180,15 @@ CI는 실행 없이 데이터를 검증한다: 시나리오 스키마 검사기�
 - **VLM 주기 접지 갱신** — 지금은 sub-task당 1회 접지. 장면이 크게 변하면
   VlaPrompt를 재발행하는 것으로 확장 가능 (orchestrator는 이미 최신 프롬프트만
   쓰므로 수신측 변경 불요).
+- **precondition 일반화 (nav 포함)** — precondition의 정의는 "이 sub-task를 지금
+  실행할 수 있는 상황인가"이며, 개념적으로 navigation에도 정당하다(LiDAR가 못
+  보는 유리·바닥 케이블, "사람이 통로에 있으면 출발 억제" 같은 시연 규범).
+  현재 grounded 전용인 것은 의미론이 아니라 구현 경제성이다 — grounded 스텝엔
+  공짜 VLM 왕복이 있고, nav엔 전용 호출(+시작 지연 ~1초)이 새로 든다.
+  일반화: 판정을 grounding에서 분리해 모든 sub-task의 on_start 이전 게이트로
+  올리고, grounded 스텝이 있으면 한 호출로 합친다(최적화로 강등). 단, 동적
+  장애물(사람 난입)의 연속 감시는 nav 스택·safety 레이어 몫이다 — start-time
+  스냅샷 체크는 그 대체물이 아니다.
 
 **큰 구조 변경 (별도 논의):**
 - **closed-loop 전환** — 현재 open-loop(발사 후 확인 없음)는 의도된 단순화.
