@@ -11,10 +11,6 @@ float32  timeout_sec     # 0 = no timeout (informational; orchestrator owns the 
 
 string   goal_text       # abstract VLA goal for the VLM to ground ("" = none —
                          # vlm_node then only judges, it does not emit a VlaPrompt)
-float32  progress_gate   # judge only once VLA task_progress >= this (0 = ungated).
-                         # Keeps the critic from failing a manipulation that is
-                         # still mid-motion; the VLM fires near completion.
-
 string   precondition_check  # scene condition that must hold BEFORE this
                              # sub-task starts ("" = no check). UNIFIED gate:
                              # the orchestrator defers the ENTIRE on_start

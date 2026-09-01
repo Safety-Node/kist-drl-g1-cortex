@@ -56,8 +56,10 @@ through the cognition layer's connectors. See *Blocked on external specs*.
   `static` — a scenario declares its own `triggers[]`; a transcript is keyword-matched.
   `llm` — every final transcript goes to `llm_node`; its plan uses the SAME scenario
   schema and the same loader/engine. A grounded vla step (`{grounded: true, goal}`) is
-  translated by `vlm_node` into a scene-specific VLA prompt before dispatch, and
-  `progress_gate` holds the VLM verdict until the VLA reports `task_progress` ≥ gate.
+  translated by `vlm_node` into a scene-specific VLA prompt before dispatch. Scene
+  judgment is on-demand and one-shot: when every motion of the sub-task reports done
+  (`CommandStatus` — external publishers pending), the orchestrator asks `vlm_node`
+  for a single verdict; fail means on_fail immediately.
   Design rationale: `docs/architecture-llm-vlm-vla.md`.
 - **Success = VLM**: `vlm_node` judges the scene and publishes a `Verdict`; the orchestrator's
   `VlmCriterion` reads the cache (VLM inference never runs on the tick loop).

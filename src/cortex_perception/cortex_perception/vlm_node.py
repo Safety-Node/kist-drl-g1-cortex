@@ -1,26 +1,27 @@
-"""VLM scene critic + VLA prompt grounder (VLM as monitor, not orchestrator).
+"""VLM node — on-demand scene judge, VLA prompt grounder, precondition judge.
 
-Two jobs, both keyed to the sub-task orchestrator_node is executing (received
-on the active-subtask topic):
+vlm_node is IDLE by default. It acts only when asked, in two moments:
 
-  1. CRITIC — periodically judge whether the sub-task's `success_check` is met
-     in the latest camera frame and publish a Verdict. When the sub-task
-     carries a progress_gate, judging is HELD until the VLA policy's
-     task_progress (from kist-vla-inference) reaches the gate — a mid-motion
-     scene must not be judged as failure. The gate defers judgment; it never
-     passes anything by itself.
+  1. SUB-TASK ENTRY (active-subtask topic). If the Subtask carries a
+     goal_text, ground it against the live frame into a VlaPrompt; if it
+     carries a precondition_check, judge that too (same VLM call when
+     grounded, dedicated call + PreconditionReport otherwise). Then idle.
 
-  2. GROUNDER — when the sub-task carries a goal_text, ground that abstract
-     goal against the live scene into the imperative the VLA policy was
-     trained on ("Open the right door of the refrigerator. Hook the yellow
-     tip attached to your right hand under the door handle and pull") and
-     publish it as a VlaPrompt. Once per sub-task, in a worker thread —
-     grounding latency must not stall the critic tick.
+  2. JUDGMENT REQUEST (VerdictRequest). The orchestrator sends exactly one
+     when every motion of the in-flight sub-task has reported done
+     (CommandStatus) — judge the scene against success_check ONCE and answer
+     with ONE Verdict. No periodic critic loop, no progress gate: the
+     completion signal owns "when", the VLM owns "whether".
 
-Runs off the control critical path — it monitors and grounds, it does not
-plan. Its cadence (period_sec) is independent of the VLA/Gearsonic loop.
+Why on-demand (vs the old 1 Hz critic loop + progress_gate):
+- VLM cost drops from ~1 call/s to ~1 call/sub-task.
+- The VLA -> VLM task_progress side channel disappears — completion signals
+  route through the orchestrator like every other coordination path.
+- "Judge near completion" stops being a threshold heuristic and becomes the
+  literal contract: judge when the module says it finished.
 
-Wiring is complete; the VLM backend itself is a stub (_evaluate / _ground).
+Runs off the control critical path. Wiring is complete; the VLM backend
+itself is a stub (_evaluate / _ground / _check_precondition).
 """
 
 import threading
@@ -29,9 +30,10 @@ import rclpy
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
-from std_msgs.msg import Float32
 
-from cortex_msgs.msg import PreconditionReport, Subtask, Verdict, VlaPrompt
+from cortex_msgs.msg import (
+    PreconditionReport, Subtask, Verdict, VerdictRequest, VlaPrompt,
+)
 
 # from sensor_msgs.msg import Image        # camera on the bridge domain
 
@@ -43,21 +45,16 @@ class VlmNode(Node):
         self.declare_parameter('image_topic', '/bridge/sensors/camera/color')
         self.declare_parameter('active_subtask_topic', '/cortex/active_subtask')
         self.declare_parameter('verdict_topic', '/cortex/critic/verdict')
+        self.declare_parameter('verdict_request_topic', '/cortex/critic/request')
         self.declare_parameter('vla_prompt_topic', '/cortex/vla/prompt')
         self.declare_parameter('precondition_report_topic', '/cortex/precondition/report')
-        # Published by kist-vla-inference (task_progress head of the policy —
-        # currently dropped in its runner; wiring tracked in the ICD).
-        self.declare_parameter('progress_topic', '/cortex/vla/task_progress')
-        self.declare_parameter('period_sec', 1.0)   # critic cadence, not control rate
 
         g = self.get_parameter
         image_topic = g('image_topic').value
-        period = float(g('period_sec').value)
 
         self._lock = threading.Lock()
-        self._current: Subtask | None = None   # subtask under evaluation
+        self._current: Subtask | None = None   # for stale checks on entry work
         self._latest_frame = None              # most recent camera frame
-        self._progress: float | None = None    # latest VLA task_progress (this subtask)
 
         grp = ReentrantCallbackGroup()
         self.pub = self.create_publisher(Verdict, g('verdict_topic').value, 10)
@@ -69,72 +66,57 @@ class VlmNode(Node):
             Subtask, g('active_subtask_topic').value, self._on_active_subtask, 10,
             callback_group=grp)
         self.create_subscription(
-            Float32, g('progress_topic').value, self._on_progress, 10,
-            callback_group=grp)
+            VerdictRequest, g('verdict_request_topic').value,
+            self._on_verdict_request, 10, callback_group=grp)
 
         # TODO(REQ-XX) [TASK-XX]: subscribe to the camera Image and cache frames:
         #   self.create_subscription(Image, image_topic, self._on_frame, 10, ...)
-        # TODO(REQ-XX) [TASK-XX]: load the VLM backend used by _evaluate/_ground.
+        # TODO(REQ-XX) [TASK-XX]: load the VLM backend used by the stubs below.
 
-        self.create_timer(period, self._tick, callback_group=grp)
         self.get_logger().info(
-            f"vlm_node up (verdict={g('verdict_topic').value}, "
-            f"prompt={g('vla_prompt_topic').value}, {period}s)")
+            f"vlm_node up (on-demand: request={g('verdict_request_topic').value} "
+            f"-> verdict={g('verdict_topic').value})")
 
-    # --- inputs -----------------------------------------------------------
+    # --- sub-task entry: grounding + precondition -------------------------
     def _on_active_subtask(self, msg: Subtask) -> None:
         with self._lock:
             self._current = msg
-            # task_progress belongs to one VLA execution; a value from the
-            # previous sub-task's motion must not open the new gate.
-            self._progress = None
         self.get_logger().info(
-            f'now judging subtask {msg.id!r} (check={msg.success_check!r}, '
-            f'gate={msg.progress_gate}, goal={msg.goal_text!r})')
+            f'sub-task {msg.id!r} entered (goal={msg.goal_text!r}, '
+            f'precondition={msg.precondition_check!r}) — awaiting requests')
         if msg.goal_text:
-            # The orchestrator publishes one Subtask per sub-task ENTRY, so one
-            # message = one grounding (re-running a scenario re-grounds — the
-            # scene may have changed). Off the callback thread: grounding is a
-            # VLM inference and must not block subtask/progress callbacks.
+            # One Subtask message = one grounding (re-running a scenario
+            # re-grounds — the scene may have changed). Off the callback
+            # thread: VLM inference must not block other callbacks.
             threading.Thread(
                 target=self._ground_and_publish, args=(msg,), daemon=True).start()
         elif msg.precondition_check:
             # No grounding round-trip to ride (nav etc.) — dedicated check.
-            # The orchestrator is deferring on_start for this report, bounded
-            # by its own fail-open deadline, so a slow/dead backend here can
-            # delay but never strand the motion.
+            # The orchestrator defers on_start bounded by its own fail-open
+            # deadline, so a slow/dead backend delays but never strands it.
             threading.Thread(
                 target=self._precheck_and_publish, args=(msg,), daemon=True).start()
 
-    def _on_progress(self, msg: Float32) -> None:
-        with self._lock:
-            self._progress = float(msg.data)
+    # --- on-demand critic -------------------------------------------------
+    def _on_verdict_request(self, msg: VerdictRequest) -> None:
+        # One request -> one verdict. Judged in a worker thread; the
+        # orchestrator matches the answer by subtask_id, so a stale verdict
+        # (sub-task advanced meanwhile) is dropped on its side.
+        threading.Thread(
+            target=self._judge_and_publish, args=(msg,), daemon=True).start()
 
-    # --- critic -----------------------------------------------------------
-    def _tick(self) -> None:
-        with self._lock:
-            cur = self._current
-            frame = self._latest_frame
-            progress = self._progress
-        if cur is None:
-            return  # nothing in flight
-
-        # Progress gate: defer judgment while the arm policy says the motion
-        # is still under way. No Verdict at all is published — silence here
-        # means "not yet", and the orchestrator's timeout still bounds it.
-        if cur.progress_gate > 0.0 and (progress is None
-                                        or progress < cur.progress_gate):
-            return
-
-        passed, confidence, reason = self._evaluate(cur.success_check, frame)
-
+    def _judge_and_publish(self, req: VerdictRequest) -> None:
+        passed, confidence, reason = self._evaluate(
+            req.success_check, self._latest_frame)
         v = Verdict()
         v.header.stamp = self.get_clock().now().to_msg()
-        v.subtask_id = cur.id
+        v.subtask_id = req.subtask_id
         v.passed = passed
         v.confidence = float(confidence)
         v.reason = reason
         self.pub.publish(v)
+        self.get_logger().info(
+            f'verdict {req.subtask_id!r}: passed={passed} ({reason})')
 
     def _evaluate(self, success_check: str, frame):
         """Return (passed, confidence, reason). Pure w.r.t. inputs.
@@ -151,7 +133,7 @@ class VlmNode(Node):
         # the grounded imperative AND — when the sub-task carries one — whether
         # the precondition holds. FAIL-OPEN on the precondition: any backend
         # error or unparseable answer reports met=True, because this gate is an
-        # optimization (skip a doomed 20s timeout), not a safety interlock.
+        # optimization (skip a doomed timeout), not a safety interlock.
         text = self._ground(sub.goal_text, self._latest_frame)
         met, why = True, ''
         if sub.precondition_check:
@@ -186,6 +168,7 @@ class VlmNode(Node):
         # TODO(REQ-XX) [TASK-XX]: run the VLM against `frame` + `goal_text`.
         return goal_text
 
+    # --- precondition (non-grounded) --------------------------------------
     def _precheck_and_publish(self, sub: Subtask) -> None:
         """Dedicated precondition check for sub-tasks without a grounded goal."""
         try:
@@ -210,15 +193,13 @@ class VlmNode(Node):
             + (f' ({why})' if not met else ''))
 
     def _check_precondition(self, check: str, frame) -> tuple:
-        """Return (met, why). Judged in the same grounding call once the real
-        backend lands — ask for prompt + {"precondition_met", "why"} in one
-        structured response.
+        """Return (met, why).
 
         STUB: returns met=True (fail-open) so shadow logs stay quiet until a
         real backend produces actual judgments. The stub must never block a
         motion — the deliberate opposite of _evaluate's always-False.
         """
-        # TODO(REQ-XX) [TASK-XX]: fold into the _ground VLM call.
+        # TODO(REQ-XX) [TASK-XX]: run the VLM against `frame` + `check`.
         return True, 'vlm backend not wired (fail-open)'
 
     def _on_frame(self, msg) -> None:

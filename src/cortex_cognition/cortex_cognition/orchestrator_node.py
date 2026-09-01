@@ -17,8 +17,14 @@ A hook step is {label: payload}; the label picks a Connector (speak / navigation
 / vla). A vla payload of {grounded: true, goal: "..."} is not sent verbatim:
 the goal goes to vlm_node (via the active Subtask), which grounds it against
 the live scene and returns a VlaPrompt; only then is the vla connector fired.
-`success` is a polymorphic Criterion (vlm reads vlm_node's Verdict off the
-tick loop — heavy inference must not block it).
+
+Scene judgment is ON-DEMAND, one-shot: when every motion fired by the
+sub-task reports done (CommandStatus — external publishers pending), the
+orchestrator sends ONE VerdictRequest to vlm_node and reads back ONE Verdict.
+passed -> advance; failed -> on_fail immediately. vlm_node runs no periodic
+critic loop, and there is no progress gate — the completion signal owns
+"when", the VLM owns "whether". Timeout remains the backstop for a motion
+that never reports.
 
 OPEN-LOOP: connectors fire commands (ActionCmd for speak, stubs for nav/vla) and
 never wait for confirmation. Preemption is immediate — a new trigger cancels the
@@ -43,9 +49,14 @@ from rclpy.node import Node
 from std_msgs.msg import Bool, String
 
 from cortex_msgs.msg import (
-    ActionCmd, Plan, PlanRequest, PreconditionReport, Subtask, TaskStatus,
-    Verdict, VlaPrompt,
+    ActionCmd, CommandStatus, Plan, PlanRequest, PreconditionReport, Subtask,
+    TaskStatus, Verdict, VerdictRequest, VlaPrompt,
 )
+
+# Connector labels whose dispatch is a physical MOTION: the sub-task's scene
+# judgment waits until each of these that fired has reported done
+# (CommandStatus). speak is not a motion — nobody waits for TTS.
+_MOTION_LABELS = frozenset({'navigation', 'vla'})
 
 
 # ===========================================================================
@@ -62,8 +73,7 @@ class SubTaskDef:
     criterion: 'Criterion' = None                   # built at LOAD -> fail fast
     timeout_s: float = 30.0
     goal_text: str = ''                             # abstract goal of a grounded vla step
-    progress_gate: float = 0.0                      # vlm judges only past this task_progress
-    precondition: str = ''                          # scene condition checked before vla fires
+    precondition: str = ''                          # scene condition checked before on_start
 
 
 def _grounded_goal(s: dict) -> str:
@@ -110,10 +120,13 @@ class Scenario:
 
 def _load_subtask(s: dict) -> SubTaskDef:
     spec = s.get('success', {})
-    gate = float(spec.get('progress_gate', 0.0))
-    if not 0.0 <= gate < 1.0:
+    if 'progress_gate' in spec:
+        # Removed concept: judgment is now on-demand — the completion signal
+        # (CommandStatus) decides WHEN, so a progress threshold has no role.
+        # Reject rather than ignore: silently dead config is a trap.
         raise ScenarioConfigError(
-            f"{s.get('name')}: progress_gate must be in [0, 1), got {gate}")
+            f"{s.get('name')}: progress_gate is removed — judgment fires once "
+            f'after every motion reports done (CommandStatus)')
     goal = _grounded_goal(s)
     # precondition is legal on ANY sub-task. With a grounded vla step it rides
     # the grounding call (VlaPrompt); without one (nav etc.) vlm_node runs a
@@ -130,7 +143,6 @@ def _load_subtask(s: dict) -> SubTaskDef:
         criterion=build_criterion(spec),            # raises ScenarioConfigError here
         timeout_s=float(spec.get('timeout_s', 30.0)),
         goal_text=goal,
-        progress_gate=gate,
         precondition=precondition,
     )
 
@@ -220,6 +232,27 @@ class AlwaysCriterion(Criterion):
 
     def evaluate(self, node, subtask_id) -> bool:
         return True
+
+
+def _needs_vlm(criterion) -> bool:
+    """Does this criterion (or any composite child) require a scene verdict?
+    Decides whether a VerdictRequest is worth sending at all."""
+    if isinstance(criterion, VlmCriterion):
+        return True
+    if isinstance(criterion, CompositeCriterion):
+        return any(_needs_vlm(c) for c in criterion.children)
+    return False
+
+
+def _motion_labels_of(st: SubTaskDef) -> set:
+    """Motion connector labels this sub-task's on_start will fire — the set of
+    CommandStatus sources judgment must wait for."""
+    labels = set()
+    for step in st.on_start:
+        for label in step:
+            if label in _MOTION_LABELS:
+                labels.add(label)
+    return labels
 
 
 def _req(spec: dict, key: str, tag: str):
@@ -342,6 +375,9 @@ class OrchestratorNode(Node):
         # motion that needs nothing from the VLM. (Grounded sub-tasks need the
         # prompt text anyway, so they keep waiting under the sub-task timeout.)
         self.declare_parameter('precondition_timeout_s', 3.0)
+        # On-demand judgment: verdict requests out, motion completions in.
+        self.declare_parameter('verdict_request_topic', '/cortex/critic/request')
+        self.declare_parameter('command_status_topic', '/cortex/command_status')
 
         g = self.get_parameter
         scenario_dir = g('scenario_dir').value
@@ -399,6 +435,11 @@ class OrchestratorNode(Node):
         self._precondition_received = False
         self._precondition_deadline = 0.0
         self._wait_t0 = 0.0              # gate-wait start (pre-on_start clock)
+        # On-demand judgment: motion labels dispatched for the CURRENT
+        # sub-task that have not yet reported done (CommandStatus). Judgment
+        # is requested exactly once, when this set empties.
+        self._pending_motions: set = set()
+        self._verdict_requested = False
 
         # --- io -----------------------------------------------------------
         # One mutually-exclusive group for transcript / verdict / tick so state
@@ -411,6 +452,8 @@ class OrchestratorNode(Node):
 
         self.plan_req_pub = self.create_publisher(
             PlanRequest, g('llm_request_topic').value, 10)
+        self.verdict_req_pub = self.create_publisher(
+            VerdictRequest, g('verdict_request_topic').value, 10)
 
         self.create_subscription(
             String, g('transcript_topic').value, self._on_transcript, 10, callback_group=grp)
@@ -424,6 +467,9 @@ class OrchestratorNode(Node):
         self.create_subscription(
             PreconditionReport, g('precondition_report_topic').value,
             self._on_precondition_report, 10, callback_group=grp)
+        self.create_subscription(
+            CommandStatus, g('command_status_topic').value,
+            self._on_command_status, 10, callback_group=grp)
 
         self.create_timer(1.0 / tick_hz, self._tick, callback_group=grp)
         self.get_logger().info(f'orchestrator_node up (tick={tick_hz}Hz)')
@@ -458,6 +504,40 @@ class OrchestratorNode(Node):
         # For a grounded sub-task WITH a precondition, this message IS the
         # verdict — it releases the deferred on_start (see _tick).
         self._precondition_received = True
+
+    def _on_command_status(self, msg: CommandStatus) -> None:
+        """A motion module reports done/failed. ⚠️ External publishers are not
+        wired yet — this is the receiving half of the contract (CommandStatus).
+        When every motion of the sub-task has reported ok, judgment fires."""
+        st = self._current()
+        if st is None or not self._started:
+            return   # nothing in flight — stale or unrelated report
+        if msg.source not in self._pending_motions:
+            return   # duplicate, or a motion this sub-task never dispatched
+        if not msg.ok:
+            # The module itself says the motion died — no point asking the
+            # VLM whether it looks done. Fail with the module's reason.
+            self._fail(f'{st.name} {msg.source} failed: {msg.detail}')
+            return
+        self._pending_motions.discard(msg.source)
+        if not self._pending_motions:
+            self._maybe_request_verdict()
+
+    def _maybe_request_verdict(self) -> None:
+        """Ask vlm_node for ONE scene judgment of the current sub-task.
+        Exactly once per sub-task, and only when its criterion needs the VLM
+        (voice_keyword / delay / always are evaluated locally on the tick)."""
+        st = self._current()
+        if st is None or self._verdict_requested or not _needs_vlm(st.criterion):
+            return
+        self._verdict_requested = True
+        req = VerdictRequest()
+        req.header.stamp = self.get_clock().now().to_msg()
+        req.subtask_id = st.name
+        req.success_check = str(
+            st.success.get('check', st.success.get('type', '')))
+        self.verdict_req_pub.publish(req)
+        self.get_logger().info(f'verdict requested for {st.name!r}')
 
     def _on_precondition_report(self, msg: PreconditionReport) -> None:
         # Non-grounded sub-tasks only (grounded ones get their verdict on the
@@ -547,6 +627,8 @@ class OrchestratorNode(Node):
         self._precondition_received = False
         self._precondition_deadline = self._now() + self._precondition_timeout_s
         self._wait_t0 = self._now()
+        self._pending_motions = set()
+        self._verdict_requested = False
         self._dispatch(st.on_create)                 # announce
         # Tell vlm_node what to judge — and, via goal_text, what to ground.
         # Publishing st.goal_text is what kicks off the VlaPrompt round-trip.
@@ -555,7 +637,6 @@ class OrchestratorNode(Node):
         sub.success_check = str(st.success.get('check', st.success.get('type', '')))
         sub.timeout_sec = st.timeout_s
         sub.goal_text = st.goal_text
-        sub.progress_gate = st.progress_gate
         sub.precondition_check = st.precondition
         self.active_pub.publish(sub)
         self._publish_status(TaskStatus.STATE_RUNNING, current_subtask=st.name)
@@ -620,6 +701,12 @@ class OrchestratorNode(Node):
             self._t0 = self._now()
             self._dispatch(st.on_start)
             self._started = True
+            # On-demand judgment bookkeeping: judge only after every motion
+            # fired here reports done. A motionless sub-task with a vlm
+            # criterion ("check the scene") is judged right away.
+            self._pending_motions = _motion_labels_of(st)
+            if not self._pending_motions:
+                self._maybe_request_verdict()
             return
         if self._awaiting_prompt and self._prompt_text is not None:
             # Grounded prompt landed: fire the deferred vla step. After
@@ -632,7 +719,16 @@ class OrchestratorNode(Node):
         if self._criterion.evaluate(self, st.name):
             self._dispatch(st.on_success)
             self._advance()
-        elif self._now() - self._t0 >= st.timeout_s:
+            return
+        v = self.latest_verdict
+        if (self._verdict_requested and v is not None
+                and v.subtask_id == st.name and not v.passed):
+            # ONE-SHOT judgment policy: the single requested verdict came back
+            # negative — fail now instead of idling out the timeout. (The
+            # motion claimed completion; the scene disagreed.)
+            self._fail(f'{st.name} verdict failed: {v.reason}')
+            return
+        if self._now() - self._t0 >= st.timeout_s:
             self._fail(f'{st.name} timeout')
 
     def _advance(self) -> None:
@@ -692,6 +788,8 @@ class OrchestratorNode(Node):
         self._precondition_why = ''
         self._awaiting_precondition = False
         self._precondition_received = False
+        self._pending_motions = set()
+        self._verdict_requested = False
 
     def _now(self) -> float:
         return time.monotonic()

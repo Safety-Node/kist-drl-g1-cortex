@@ -84,12 +84,11 @@ combos — e.g. speak + vla is two steps in on_start):
               (only for fixed, scene-independent motions).
 
 success criterion types:
-  {"type": "vlm", "check": "<English scene condition>", "timeout_s": <sec>,
-   "progress_gate": 0.9}
-              Scene judgment by VLM. For vla sub-tasks ALWAYS include
-              progress_gate (default 0.9): judging fires only once the arm
-              policy reports task_progress >= gate, so a mid-motion scene is
-              not judged as failure.
+  {"type": "vlm", "check": "<English scene condition>", "timeout_s": <sec>}
+              Scene judgment by VLM — judged ONCE, automatically, after every
+              motion of the step reports completion. Write the check as the
+              END state to verify ("refrigerator door is open"), not a
+              mid-motion state.
   {"type": "delay", "seconds": <sec>, "timeout_s": <sec>}
               Blind wait. Placeholder only — asserts nothing about the world.
   {"type": "voice_keyword", "keywords": ["<Korean>", ...], "timeout_s": <sec>}
@@ -131,7 +130,7 @@ _DUMMY_PLANS = {
                 'on_start': [{'vla': {'grounded': True,
                                       'goal': 'open the refrigerator door'}}],
                 'success': {'type': 'vlm', 'check': 'refrigerator door is open',
-                            'timeout_s': 20, 'progress_gate': 0.9},
+                            'timeout_s': 20},
                 'on_fail': [{'speak': '냉장고 문을 열지 못했습니다.'}],
             },
             {
@@ -143,7 +142,7 @@ _DUMMY_PLANS = {
                                       'goal': 'pick up the cucumber'}}],
                 'success': {'type': 'vlm',
                             'check': 'a cucumber is held in the gripper',
-                            'timeout_s': 20, 'progress_gate': 0.9},
+                            'timeout_s': 20},
                 'on_success': [{'speak': '오이를 집었습니다.'}],
                 'on_fail': [{'speak': '오이를 집지 못했습니다.'}],
             },

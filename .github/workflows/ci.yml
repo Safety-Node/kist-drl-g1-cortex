@@ -206,9 +206,9 @@ jobs:
                       print(f'{p}: {st.get("name")}: at most one grounded vla per sub-task')
                       bad = True
                   spec = st.get('success', {})
-                  gate = spec.get('progress_gate', 0.0)
-                  if not (isinstance(gate, (int, float)) and 0.0 <= gate < 1.0):
-                      print(f'{p}: {st.get("name")}: progress_gate must be in [0, 1), got {gate!r}')
+                  if 'progress_gate' in spec:
+                      print(f'{p}: {st.get("name")}: progress_gate is removed - '
+                            'judgment fires once after motion completion (CommandStatus)')
                       bad = True
                   check_criterion(p, st.get('name'), spec)
                   # A sub-task that can time out must own its failure message;

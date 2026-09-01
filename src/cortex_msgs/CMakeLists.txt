@@ -19,6 +19,8 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/Plan.msg"
   "msg/VlaPrompt.msg"
   "msg/PreconditionReport.msg"
+  "msg/CommandStatus.msg"
+  "msg/VerdictRequest.msg"
   DEPENDENCIES std_msgs builtin_interfaces
 )
 

@@ -68,6 +68,10 @@ orchestrator_node:
     # 비-grounded 판정 대기 상한. 넘기면 fail-open으로 그냥 출발한다 —
     # vlm_node가 죽어도 VLM이 필요 없는 이동이 발이 묶이면 안 된다.
     precondition_timeout_s: 3.0
+    # On-demand 판정: 동작 완료 신호가 모이면 vlm에 1회 판정을 요청한다.
+    verdict_request_topic: /cortex/critic/request   # must match vlm_node
+    # ⚠️ 발행측(gearsonic nav / vla-inference) 미배선 — 계약만 수신 대기.
+    command_status_topic: /cortex/command_status
 
 vlm_node:
   ros__parameters:
@@ -76,12 +80,9 @@ vlm_node:
     verdict_topic: /cortex/critic/verdict
     vla_prompt_topic: /cortex/vla/prompt   # grounded prompts -> orchestrator
     precondition_report_topic: /cortex/precondition/report  # 비-grounded 전제 판정
-    # VLA policy task_progress. Publisher = kist-vla-inference (its runner
-    # currently DROPS action.task_progress — wiring it up is tracked in the
-    # ICD; until then progress-gated sub-tasks simply never get judged and
-    # fail on their own timeout, which is the safe direction).
-    progress_topic: /cortex/vla/task_progress
-    period_sec: 1.0
+    # On-demand 판정 요청 수신 (orchestrator가 완료 신호 취합 후 1회 요청).
+    # 주기 판정 루프(period_sec)와 task_progress 구독은 제거됐다.
+    verdict_request_topic: /cortex/critic/request
 
 llm_node:
   ros__parameters:

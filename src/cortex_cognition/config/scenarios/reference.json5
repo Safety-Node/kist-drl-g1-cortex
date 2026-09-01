@@ -17,8 +17,9 @@
 //                  "문자열"                        → 그대로 VLA로 (장면 무관 고정 동작)
 //                  { grounded: true, goal: "..." } → goal을 vlm_node가 현재 프레임 기준
 //                     장면 특화 명령문으로 grounding(VlaPrompt)한 뒤 발사. sub-task당 1개,
-//                     on_start에서만 허용(로드 시 검증). success에 progress_gate(예: 0.9)를
-//                     주면 VLA task_progress가 그 값 이상일 때만 vlm이 판정한다.
+//                     on_start에서만 허용(로드 시 검증). vlm 판정은 on-demand 1회 —
+//                     동작(nav/vla)이 완료 신호(CommandStatus)를 보내면 그때 판정한다.
+//                     (progress_gate는 제거됨 — 쓰면 로드 에러.)
 //                     sub-task에 precondition("장면 조건")을 주면 판정 도착까지 on_start
 //                     전체가 유예된다(통일 규칙 — combo의 nav 스텝도 판정 전에 안 나감).
 //                     grounded 스텝이 있으면 grounding VLM 호출에 합승(VlaPrompt가 판정 겸

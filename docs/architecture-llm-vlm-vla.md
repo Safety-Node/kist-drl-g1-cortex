@@ -18,15 +18,16 @@ ROS 토픽으로 묶는 open-loop 상태기계이며, 세 모델 어느 것도 �
 ```
                                     ┌─────────────────────── PC (cortex) ───────────────────────┐
 발화 ──▶ stt_node ──transcript──▶ orchestrator_node ◀──Plan──── llm_node ──▶ (LLM API)
-                                    │      │  ▲                PlanRequest
-                                    │      │  └─VlaPrompt──── vlm_node ──▶ (VLM API)
-                                    │      └──Subtask────────▶   │  ▲
-                                    │         (goal_text,        │  └─task_progress── kist-vla-inference
-                                    │          progress_gate)    └──Verdict            (GR00T policy)
-                                    │                                                      ▲
-                                    ├─ActionCmd(say)──▶ tts_node                           │
-                                    ├─(stub)──────────▶ nav-planner                        │
-                                    └─(stub)──────────▶ VLA prompt ────────────────────────┘
+                                    │   │  ▲  ▲                PlanRequest
+                                    │   │  │  └─VlaPrompt / PreconditionReport
+                                    │   │  │        ▲
+                                    │   │  └─Verdict┴─── vlm_node ──▶ (VLM API)
+                                    │   └──Subtask / VerdictRequest──▶ (평소 유휴,
+                                    │                                   요청 시에만 동작)
+                                    │  ◀──CommandStatus(완료 보고)── nav/vla 모듈 ⚠️미배선
+                                    ├─ActionCmd(say)──▶ tts_node
+                                    ├─(stub)──────────▶ nav-planner ──┐
+                                    └─(stub)──────────▶ VLA prompt ───┴▶ kist-vla-inference
 ```
 
 ## 2. 자연어 → primitive 명령: 3단 번역
@@ -53,14 +54,15 @@ LLM에 보내야 하고(느림, 비쌈), VLA에 추상 목표를 직접 주면 �
                             grasp_cucumber(vla, grounded)]}
      └▶ orchestrator: open_door 진입
          ├─ speak "냉장고 문을 엽니다"            (on_create)
-         ├─ Subtask{goal_text: "open the refrigerator door",
-         │          progress_gate: 0.9}          → vlm_node
+         ├─ Subtask{goal_text: "open the refrigerator door"} → vlm_node
          │   └▶ VlaPrompt{"Open the right door of the refrigerator.
          │                 Hook the yellow tip attached to your right
          │                 hand under the door handle and pull."}
-         ├─ vla connector 발사 (grounded 텍스트)   → VLA
-         ├─ (VLA task_progress 0.0 → … → 0.92)
-         └─ progress ≥ 0.9 부터 vlm이 장면 판정   → Verdict{passed} → 다음 sub-task
+         ├─ vla connector 발사 (grounded 텍스트)   → VLA. vlm은 유휴로 복귀
+         ├─ (VLA 동작 중 — orch는 완료 신호 대기, timeout 상한)
+         ├─ CommandStatus{source: vla, ok} ⚠️미배선  → orch
+         └─ VerdictRequest → vlm 1회 판정 → Verdict{passed} → 다음 sub-task
+                                            (failed면 즉시 on_fail)
 ```
 
 ## 3. Sub-task 포맷 — 라우팅은 데이터다
@@ -76,8 +78,7 @@ LLM 출력 포맷을 **파일 시나리오(JSON5)와 동일한 스키마**로 �
   on_start:  [{ vla: { grounded: true, goal: "open the refrigerator door" } }],
   //          [{ navigation: "goal:refrigerator" }]       // nav 라우팅이면 이렇게
   //          [{ speak: "..." }, { vla: {...} }]          // tts+vla 조합 = 스텝 2개
-  success:   { type: "vlm", check: "refrigerator door is open",
-               timeout_s: 20, progress_gate: 0.9 },
+  success:   { type: "vlm", check: "refrigerator door is open", timeout_s: 20 },
   on_fail:   [{ speak: "문을 열지 못했습니다." }],
 }
 ```
@@ -100,10 +101,11 @@ LLM 출력 포맷을 **파일 시나리오(JSON5)와 동일한 스키마**로 �
 |---|---|---|---|
 | `/cortex/llm/request` | `PlanRequest` | orch → llm | request_id 상관, latest-wins |
 | `/cortex/llm/plan` | `Plan` | llm → orch | `scenario_json` = 위 스키마. `ok=false`+`not_a_command` = 방관자 발화 무시 경로 |
-| `/cortex/active_subtask` | `Subtask`(+`goal_text`,`progress_gate`) | orch → vlm | 판정 대상 + 접지 요청을 한 메시지로 |
+| `/cortex/active_subtask` | `Subtask`(+`goal_text`,`precondition_check`) | orch → vlm | 진입 통보: 접지·전제 판정 요청 |
 | `/cortex/vla/prompt` | `VlaPrompt` (+`precondition_met`, `precondition_why`) | vlm → orch | 접지 결과 + 전제 판정. orch가 vla connector로 중계 |
-| `/cortex/vla/task_progress` | `std_msgs/Float32` | **vla-inference** → vlm | ⚠️ 외부 배선 필요 — §7 |
-| `/cortex/critic/verdict` | `Verdict` | vlm → orch | 기존. progress_gate 미달 시 **침묵**(발행 안 함) |
+| `/cortex/command_status` | `CommandStatus` | **nav/vla 모듈** → orch | 동작 완료/실패 보고. ⚠️ 발행측 외부 미배선 — §7 |
+| `/cortex/critic/request` | `VerdictRequest` | orch → vlm | 완료 신호가 모이면 **1회** 판정 요청 |
+| `/cortex/critic/verdict` | `Verdict` | vlm → orch | 요청당 정확히 1건. fail → 즉시 on_fail |
 
 주목할 규약 두 가지:
 
@@ -130,9 +132,14 @@ LLM 출력 포맷을 **파일 시나리오(JSON5)와 동일한 스키마**로 �
   대체물이 아니다. 기본은 **shadow 모드**(`precondition_enforce: false`) —
   unmet을 경고 로그로만 남기고 진행하며, shadow 로그와 실제 결과의 상관이
   확인된 뒤에만 enforce로 승격한다.
-- **progress gate 미달 시 Verdict를 "실패"가 아니라 무발행으로 했다.**
-  침묵 = "아직 모름"이며, 시간 상한은 오케스트레이터의 timeout이 소유한다.
-  판정자와 시계 소유자를 분리하는 기존 원칙 그대로다.
+- **판정은 on-demand, one-shot이다.** vlm_node에 주기 판정 루프가 없다 —
+  sub-task의 모든 동작이 완료 신호(CommandStatus)를 보내면 orchestrator가
+  VerdictRequest를 정확히 1회 보내고, Verdict 1건으로 끝난다(passed → 진행,
+  failed → 즉시 on_fail). progress_gate는 제거됐다: "동작 중간 장면 오판 방지"
+  문제를 임계값 비교로 우회하는 대신, "완료 주장 → 그때 검증"이라는 정공법으로
+  풀었다. VLM 비용은 ~1회/초 → ~1회/sub-task로 줄고, VLA→VLM으로 orchestrator를
+  우회하던 task_progress 사이드 채널이 사라져 모든 조율이 다시 orchestrator를
+  지난다. 완료 신호가 영영 안 오는 동작은 여전히 timeout이 잡는다.
 
 ## 5. 오케스트레이터의 특별함 — ROS 미들웨어 위의 설계
 
@@ -169,7 +176,7 @@ LLM 출력 포맷을 **파일 시나리오(JSON5)와 동일한 스키마**로 �
 | 팔 | GR00T+로봇 | vla connector stub (로그) |
 
 CI는 실행 없이 데이터를 검증한다: 시나리오 스키마 검사기가 grounded 페이로드
-형식·progress_gate 범위·on_fail 누락까지 로드 전에 잡고, 로더의 fail-fast가
+형식·제거된 progress_gate 사용·on_fail 누락까지 로드 전에 잡고, 로더의 fail-fast가
 같은 규칙을 런타임(LLM 플랜)에도 적용한다. "시나리오는 코드가 아니라
 데이터"라는 원칙이 LLM 도입 후에도 유지되는 이유다.
 
@@ -209,12 +216,12 @@ CI는 실행 없이 데이터를 검증한다: 시나리오 스키마 검사기�
 
 | 레포 | 필요한 일 | 현황 |
 |---|---|---|
-| kist-vla-inference | `task_progress`를 `/cortex/vla/task_progress`(Float32)로 발행 | 정책은 이미 출력 중 — `src/vla/runner.py`의 `_run_inference`가 chunk에서 **버리고 있음**. 발행 한 줄 추가면 됨 |
+| kist-vla-inference | 동작 완료 시 `CommandStatus{source: "vla", ok}` 발행 (`/cortex/command_status`) | 미배선 — 정책의 task_progress 출력을 내부 임계값과 비교해 완료를 판단하면 됨 (임계값 소유권은 VLA 측) |
 | kist-vla-inference | VLA 프롬프트 수신 — 지금은 시작 시 고정 `config.prompt` | VlaPrompt(또는 ActionCmd) 구독으로 runtime prompt 교체 필요 (ICD-70 gap과 같은 계열) |
-| kist-gearsonic-inference | nav/vla ActionCmd 수신부 (ICD-70) | 미구현 gap — 기존 이슈 그대로 |
+| kist-gearsonic-inference | nav 명령 수신부 (ICD-70) + 도착 시 `CommandStatus{source: "navigation", ok}` 발행 | 미구현 gap — 기존 이슈 + 완료 보고 추가 |
 
-progress 발행이 없는 동안의 동작은 안전한 방향으로 죽는다: progress_gate가
-걸린 sub-task는 판정이 영원히 유보되고 timeout으로 실패한다(오판정 없음).
+완료 신호가 없는 동안의 동작은 안전한 방향으로 죽는다: 판정 요청이 영영
+발사되지 않으므로 vlm criterion sub-task는 timeout으로 실패한다(오판정 없음).
 
 ---
 
